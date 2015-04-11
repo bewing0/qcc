@@ -1,5 +1,5 @@
 /*
- * 
+ *
  *  Copyright (c) 2001-2004 Fabrice Bellard
  *  Copyright (c) 2006-2007 Rob Landley
  *  Copyright (c) 2015 Bruce Ewing
@@ -12,18 +12,17 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
-#ifdef WIN32
-#include <sys/timeb.h>
-#else
+
+#ifndef WIN32
 #include <stdint.h>
-// #include <sys/time.h>	-- this was copied from TCC, but it doesn't exist in musl!
-#include <sys/mman.h>
+// #include <sys/time.h>	-- this was copied from TCC, but it doesn't exist in musl! -- if GCC needs it, then it needs its own ifdef?
+//#include <sys/mman.h>
 #endif
 
 
 
 
-// HIHI!! many of these tccg things are single bits -- put those into a single tccg_flag_bits with masks?
+// HIHI!! many of these tccg things are single bits -- put those into a single flag_bits with masks?
 // uint8_t host_bigendian;
 int tccg_warn_unsupported, tccg_warn_write_strings, tccg_warn_error, tccg_warn_implicit_function_declaration;
 int tccg_char_is_unsigned, tccg_nocommon, tccg_leading_underscore, tccg_verbose;
@@ -50,16 +49,23 @@ int do_bench = 0;
 
 uint8_t *wrksp, *wrksp_top, *name_strings, host_bigendian, *emit_ptr;
 uint8_t stoppers[128], prep_src[128], prep_ops[256], alnum_[256], c_ops[256], whtsp_lkup[128];
-int8_t hex_lkup[256];
+int8_t hex_lkup[256], hexout[16];
 uint32_t wrk_size, wrk_rem, wrk_used_base, namestr_len, nxt_pass_info[4];
 uint16_t total_errs, total_warns, max_names_per_hash;
 
 
 int32_t da_entry_count[7], da_tot_entrylen[7];
-char *da_buffers[7];				// HIHI!!!! convert this to uint8_t -- having them as chars isn't helping
+uint8_t *da_buffers[7];
 char *outfile, *cur_fname;
 
-//int next_tok_flags;
+uint64_t *cint_tbl;			// array for storage of all constant integer values
+uint64_t *cman_tbl;			// storage for all constant floating mantissas
+uint16_t *cexp_tbl;			// exponents
+uint32_t *idx_tbl;			// indexes into all the other arrays
+uint32_t idxidx;			// index into the idx table
+uint32_t noname_cnt;		// number of anonymous structs/unions/enums
+uint32_t int_cnt;			// entries in the cint_tbl
+uint32_t flt_cnt;			// entries in cman/cexp tables
 
 char inout_fnames[2][64];			// filenames for 2 temporary files
 int8_t iof_in_toggle;				// index of the inout_fname that is INPUT
@@ -89,10 +95,16 @@ const uint64_t size_mask[3] =
 	0xffffffff
 };
 
+uint8_t m1cstr[4] = "-1";		// string for default defines
+
+struct pass_info
+{
+	uint8_t *fname;
+	uint32_t line_num;
+	int infd;
+};
 
 
-// inlines
-//int is_space(int ch);
 
 // the preprocessor needs a limit on string constants, macros, and macro inputs
 // -- and it must be less than half the chunk size (30k) of read_compressed
@@ -150,7 +162,7 @@ const uint64_t size_mask[3] =
 // definitions of nxt_pass_info subscripts -- in the preprocessor
 #define PP_ALNUM_SIZE		0			// total length of all the alphanumeric strings
 #define PP_STRING_CNT		1			// total count of alphanumeric strings
-#define PP_NUMS_GT255		2			// total count of numeric constants with values > 255
+#define PP_BIG_NUMS			2			// total count of numeric constants with "big" values
 #define PP_NUM_CNT			3			// total count of numeric constants
 
 
@@ -166,7 +178,6 @@ typedef struct FlagDef {
  char *name;
 } FlagDef;
 
-// was { offsetof(TCCState, warn_unsupported), 0, "unsupported" },
 
 static FlagDef warning_defs[] = {
  { &tccg_warn_unsupported, 0, "unsupported" },

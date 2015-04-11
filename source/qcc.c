@@ -39,10 +39,8 @@
 // TODOS:
 // doublesharp()
 // handle floating point math in constant expressions
-// a macro that is defined to nothing should default to -1 in build_name
 // make the ternary test in eval_const_expr active
-// convert the long doubles in eval_const_expr to just doubles, I think?
-// escape all curly brackets in strings in read_compressed
+// malloc space for each ninfo's fname in cpp -- don't use the emitted one forever
 
 // later:
 // sizeof() needs to be able to recognize a function pointer
@@ -71,6 +69,7 @@
 // QCC can theoretically be built with any host compiler, with any host C library
 // -- however, the host compilers and C libraries are not completely interchangeable
 // -- so all the fiddly code to make the build work under all possible scenarios is contained in libc_compat.c.
+#include "tok.h"
 #include "libc_compat.c"
 
 // in the same spirit as having multiple targets and formats,
@@ -78,9 +77,9 @@
 #include "crc32.c"
 
 
-#include "tok.h"
 #include "cpp.c"
 #include "token.c"
+#include "tspec.c"
 
 
 void onetime_init()
@@ -122,6 +121,10 @@ void onetime_init()
 	i = '0';
 	while (i <= '9') hex_lkup[i++] = i - '0';
 
+	// and a lookup table in the other direction
+	i = 16;
+	while (--i >= 10) hexout[i] = 'a' + i - 10;
+	while (i >= 0) hexout[i--] = '0' + i;
 
 	// build a lookup table to recognize C operators
 	memset (c_ops, 0, 256);
@@ -227,7 +230,7 @@ void onetime_init()
 	{
 		da_tot_entrylen[i] = 0;
 		da_entry_count[i] = 0;
-		da_buffers[i] = (char *)wrksp + (wrk_size / 8) * i;
+		da_buffers[i] = wrksp + (wrk_size / 8) * i;
 	}
 	// the first entry in the "includes" da should be 0 length
 	da_tot_entrylen[INCLUDE_PATHS] = 1;
@@ -649,8 +652,9 @@ void binary_op(uint8_t *p, uint64_t *llp, uint8_t *type)
 }
 
 // take a tokenized expression (expr) with precalculated internal values (llp and ldp) and evaluate it
-// HIHI maybe put the return value in an arg, and pass back an error flag? -- need *inf, so I can do show_errors?
-int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, long double *ldp, int32_t ldblcnt)
+// HIHI maybe put the return value in an arg, and pass back an error flag? -- otherwise need *inf, so I can show_errors?
+// -- move this back into cpp?? It's not generic enough.
+int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, double *ldp, int32_t ldblcnt)
 {
 	uint8_t *s, *e, *p, *c, restart, tok, type[200];
 	int i;
@@ -694,6 +698,7 @@ int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, long double 
 				tok = next_tok(p);			// the next token *must* be an rvalue for the operator
 //				if (tok <= TOK_SIZEOF) show_error;
 				// modify the rvalue at the right end of the expression
+	// check "type" to see if this tok is a float
 				llp[tok - TOK_SIZEOF - 1] = - (int64_t) llp[tok - TOK_SIZEOF - 1];
 				*p = TOK_NO_OP;							// now that the operator has been processed, delete it
 				p = e;
@@ -861,7 +866,8 @@ int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, long double 
 		// and last, the stupid "ternary condtional" ?	evaluate right to left, p is already set properly
 		while (restart == 0 && *--p != TOK_O_PAREN)
 		{
-			if (*p == TOK_QMARK) i = 8;			// HIHI!!!
+			if (*p == TOK_QMARK)
+				i = 8;			// HIHI!!! gotta parse it and eliminate it from the expr
 		}
 
 		// are there any operators left between s and e? If not, destroy the parens of this fully evaluated subexpression.
@@ -885,6 +891,22 @@ int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, long double 
 }
 
 
+void handle_emit_overflow()		// struct pass_info *inf
+{
+	int i;
+	char *b = (char *) wrksp + wrk_used_base;
+	i = (char *) emit_ptr - b;
+	if (outfd < 0)
+	{
+		outfd = qcc_create("hi1");
+//		outfd = qcc_create(inout_fnames[iof_in_toggle ^ 1]);		// HIHI need to init inout_fnames, still
+// HIHI and what happens if the open fails? show_error? fatal error and die?
+	}
+	write (outfd, b, i);			// dump out the entire emit buffer
+	emit_ptr = (uint8_t *) b;		// and reset the emit ptr back to base
+}
+
+
 // compile a single C source file
 int do_c_compile(char *fname)
 {
@@ -905,18 +927,22 @@ int do_c_compile(char *fname)
 //	preprocess_to_text(in);
 //	return 0;
 
-	// do preprocessing: includes, defines, macros, #ifs, etc.
-	preprocess (in, fname);
+	preprocess (in, fname);		// preprocessing: includes, defines, macros, #ifs, etc.
 
-	tokenize();		// take the messy output from the preprocessor and tokenize it prettily
+	tokenize();			// take the messy output from the preprocessor and tokenize it prettily
 
-	typespecs();
+	typespecs();		// parse struct/union/enum/typedef info
 
-	syntax_check();
+	declarations();		// parse variables
 
-	emit_to_target();
+	syntax_check();		// everything that's left should be logic? -- check syntax
 
-//	build_object(wrksp);
+	if (total_errs != 0) return 1;
+
+	emit_to_target();	// convert to binary
+	
+	// XXX: -- then separate into text/data/rodata mem buffers?
+
 	return 0;
 }
 
@@ -942,13 +968,15 @@ int compile()
 			j = do_c_compile(p);
 //		else
 //			j = do_asm_compile(p);		HIHI!  -- .s files don't need preprocessing, and .S files DO?? And they use # chars for comments! Gah!
+// -- and what extension will I use for intel syntax asm files?
 
 		if (j > err_lvl) err_lvl = j;
 		p = c + 1;
 		++i;				// next source file
 	}
 
-	// loop through all workspaces and free all of them
+//	build_object();			// call the output formatter to dump the mem buffers out as ELF or whatever
+
 	free (wrksp);
 	return err_lvl;
 }

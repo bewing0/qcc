@@ -81,6 +81,27 @@ void qcc_write(int fd, char *buf, int len)
 }
 
 
+void read_tok(uint8_t **p, struct pass_info *inf)
+{
+	int32_t i;
+	uint8_t *c, *s;
+	s = wrksp_top;	// if an input file exists, then wrksp_top is always 30K below wrk_rem
+	c = *p;			// perform the copydown, get the length
+	i = 0;
+	while (*c != TOK_ENDOFBUF)
+	{
+		*(s++) = *(c++);
+		++i;
+	}
+	i = read (inf->infd, s, 30 * 1024 - i);
+	if (i == 0)
+	{
+		close (inf->infd);
+		inf->infd = -1;
+	}
+}
+
+
 // convert a number to a decimal char string
 int ntc(int32_t i, char *p)
 {
@@ -112,115 +133,127 @@ int ntc(int32_t i, char *p)
 }
 
 
-// HIHI!!! put a big ifdef around all this if using the musl library!
-// else use strtoull() and strtold() if they work? Use them to call the musl functions.
 
-//###############################
+#ifdef WIN32
+#include <sys/timeb.h>
 
-
-
-
-/* Lookup table for digit values. -1==255>=36 -> invalid */
-static const unsigned char table[] = { -1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
- 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,-1,-1,-1,-1,-1,-1,
--1,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,
-25,26,27,28,29,30,31,32,33,34,35,-1,-1,-1,-1,-1,
--1,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,
-25,26,27,28,29,30,31,32,33,34,35,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
--1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-};
-
-
-#define strtoull(in,out,base)		(__intscan((in), (out), (base)))
-
-// HIHI!!! I don't particularly like this code! It doesn't autodetect base 2. The "table" above looks a little dodgy.
-// I already have a hex_lkup table that does the same thing. I already have to prescan the string to find any '.' or a 'b'
-// at the end? So I already know how long it is (and where the endpointer is)? It has this whole extra 'c' variable.
-// I should put maxui and maxu64 out as const globals.
-uint64_t __intscan(const char *instr, char **end_str, unsigned base)
+int64_t microseconds()
 {
-	const unsigned char *val = table+1;
-	int c, neg=0;
-	unsigned x, maxui;
-	uint64_t y, maxu64;
-	unsigned char *num = (unsigned char *) instr;
-	if (base > 36) goto done;
-	maxui = ~0;
-	maxu64 = ~0;
-	y = 0;
+	struct _timeb tb;
+	_ftime(&tb);
+	return ((int64_t) tb.time * 1000 + tb.millitm) * 1000;
+}
 
-	c = *num;
-	if (c=='+' || c=='-') {
-		neg = ('+' - c) / 2;		// 0 or -1
-		c = *++num;
-	}
-	if ((base == 0 || base == 16) && c=='0') {
-		c = *++num;
-		if ((c|32)=='x') {
-			c = *++num;
-			base = 16;
-		} else if (base == 0) {
-			base = 8;
+#else
+int64_t microseconds()
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+#endif
+
+
+uint8_t dfloat_parse (uint8_t *instr, uint8_t **endstr, double *dval, uint64_t *iman, uint16_t *iexp)
+{
+// HIHI!! if dval is NULL, then always put the value in iman/iexp
+	return 0;
+}
+
+
+// parse a char string as either a 64bit int, a double, or a long double
+uint8_t num_parse (uint8_t *instr, uint8_t **endstr, uint64_t *ival, double *dval, uint64_t *iman, uint16_t *iexp)
+{
+	uint8_t c, *s1;
+	int8_t h;
+	uint32_t x;
+	uint64_t y;
+
+	// skip a 0x or 0b, then look for a radix point
+	s1 = instr + 1;
+	if (*instr == '0' && ((*s1 | 0x20) == 'x' || (*s1 | 0x20) == 'b')) ++s1;
+	while (hex_lkup[*s1] >= 0) ++s1;
+	// the next byte MUST be a radix point, or it's not a float
+	if (*s1 == '.')
+		return dfloat_parse(instr, endstr, dval, iman, iexp);
+
+	// parse as an int, into ival -- do the easy part using 32b, then switch to 64b
+	x = 0;
+	if (*instr == '0')			// parse as something other than decimal?
+	{
+		s1 = instr + 1;
+		if ((*s1 | 0x20) == 'x')			// parse as hex
+		{
+			h = 8;
+			c = hex_lkup[*++s1];
+			while (--h >= 0 && (int8_t) c >= 0)
+			{
+				x = (x << 4) | c;
+				c = hex_lkup[*++s1];
+			}
+			y = x;
+			h = 8;
+			while (--h >= 0 && (int8_t) c >= 0)
+			{
+				y = (y << 4) | c;
+				c = hex_lkup[*++s1];
+			}
 		}
-	} else {
-		if (base == 0) base = 10;
+		else if ((*s1 | 0x20) == 'b')		// parse as binary
+		{
+			h = 32;
+			c = *++s1 - '0';
+			while (--h >= 0 && c < 2)
+			{
+				x = (x << 1) | c;
+				c = *++s1 - '0';
+			}
+			y = x;
+			h = 32;
+			while (--h >= 0 && c < 2)
+			{
+				y = (y << 1) | c;
+				c = *++s1 - '0';
+			}
+		}
+		else		// parse as octal
+		{
+			h = 10;
+			c = *s1 - '0';
+			while (--h >= 0 && c < 8)
+			{
+				x = (x << 3) | c;
+				c = *++s1 - '0';
+			}
+			y = x;
+			while (c < 8 && y <= (~ (uint64_t) 0) >> 3)
+			{
+				y = (y << 3) | c;
+				c = *++s1 - '0';
+			}
+		}
 	}
-	if (val[c] >= base) goto done;
-
-	if (base == 10) {
-		for (x=0; c-'0'<10U && x<=maxui/10-1; c = *++num)
-			x = x*10 + (c-'0');
-		for (y=x; c-'0'<10U && y<=maxu64/10 && 10*y<=maxu64-(c-'0'); c = *++num)
-			y = y*10 + (c-'0');
-		if (c-'0'>=10U) goto done;
-	} else if ((base & base-1) == 0) {			// for any base that's a power of 2
-		int bs = "\0\1\2\4\7\3\6\5"[(0x17*base)>>5&7];
-		for (x=0; val[c]<base && x<=maxui/32; c = *++num)
-			x = x<<bs | val[c];
-		for (y=x; val[c]<base && y<=maxu64>>bs; c = *++num)
-			y = y<<bs | val[c];
-	} else {
-		for (x=0; val[c]<base && x<=maxui/36-1; c = *++num)
-			x = x*base + val[c];
-		for (y=x; val[c] < base && y <= maxu64/base && base * y <= maxu64 - val[c]; c = *++num)
-			y = y*base + val[c];
+	else			// parse as decimal
+	{
+		s1 = instr;
+		c = *s1 - '0';
+		while (c < 10 && x <= (0xffffffff / 10) -1)
+		{
+			x = x*10 + c;
+			c = *++s1 - '0';
+		}
+		y = x;
+		while (c < 10 && y <= (~ (uint64_t) 0) / 10 && 10*y <= (~ (uint64_t) 0) - c)
+		{
+			y = y*10 + c;
+			c = *++s1 - '0';
+		}
 	}
-	if (val[c]<base) {
-		for (; val[c]<base; c = *++num);
-		y = maxu64;
-	}
-done:
-	if (end_str != NULL)
-		*end_str = (char *) num;				// first failed char
-	return (y^neg)-neg;
+	*ival = y;
+	*endstr = s1;
+	return 0;
 }
 
-
-
-#define strtold(in, out)	__floatscan((in),(out))
-// HIHI!!! convert these ifdefs into if(sizeof(long double)) statements in the code below!  OYOY
-
-
-long double __floatscan(const char *in, char **out)
-{
-//	long double d;
-	double d;
-	int i;
-	i = sscanf (in, "%f", &d);			// use the msvc format converter for now on a double (the native size)
-	*out = (char *) in + i;
-//	return d;
-	return (long double) d;
-}
 
 #if 0
 

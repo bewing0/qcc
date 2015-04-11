@@ -11,19 +11,6 @@
 
 
 
-/*
-struct TCCState {
- int output_type;
- 
-// BufferedFile **include_stack_ptr;
- int *ifdef_stack_ptr;
-};
-
-typedef struct TCCState		TCCState;
-*/
-
-// I added all the crap down to here -- try to simplify it away -- it's mostly bogus!
-
 
 int countof(FlagDef *p)			// HIHI!! faking this for now! It's an *INTRINSIC* function, like offsetof()!!!
 {
@@ -69,20 +56,43 @@ int tcc_set_warning(char *warning_name, int value)
  }
 }
 
-void cmd_error(char *str1, char *r)
+// how_far indicates the amount of data to show from *r
+// 0 = show one byte, 1 = show one "word", -1 = show two "words"
+void show_error(int level, char *str1, char *r, int how_far, struct pass_info *inf)
 {
-	write (2, "Error: ", 7);
+	char *p;
+	int len;
+// HIHI!! dump filename and line number -- if inf is NULL, say "command line"
+	if (level == 0)
+	{
+		write (2, "Error: ", 7);
+		++total_errs;
+	}
+	else if (level > 0)
+	{
+		write (2, "Warning: ", 9);
+		if (inf != NULL) ++total_warns;
+	}
+// else write (??, "info: ", 6); ?? -- If I send it to a non-2 fd, I have to do it *everywhere*
 	write (2, str1, strlen(str1));
-	write (2, r, strlen(r));
-	write (2, "\n", 1);
-	exit(1);
-}
-
-void warning(char *str1, char *r)
-{
-	write (2, "Warning: ", 9);
-	write (2, str1, strlen(str1));
-	write (2, r, strlen(r));
+	if (r != NULL)
+	{
+		if (how_far == 0) len = 1;
+		else
+		{
+			len = 0;
+			p = r;
+			while (*p != ' ' && *p != '\n' && *p != 0) ++p, ++len;
+			if (how_far < 0 && *p == ' ')
+			{
+				++p;
+				++len;
+				while (*p != ' ' && *p != '\n' && *p != 0) ++p, ++len;
+			}
+		}
+// HIHI!! if len == 1 and *r is non-printable, then do some cute display of it -- or should I do that for ALL non-printables in r?
+		write (2, r, len);
+	}
 	write (2, "\n", 1);
 }
 
@@ -109,25 +119,11 @@ static char *tcc_basename(char *name)
  return p;
 }
 
-//#if !defined(LIBTCC)
-
-static int64_t getclock_us(void)
-{
-#ifdef WIN32
- struct _timeb tb;
- _ftime(&tb);
- return (tb.time * 1000LL + tb.millitm) * 1000LL;
-#else
- struct timeval tv;
- gettimeofday(&tv, NULL);
- return tv.tv_sec * 1000000LL + tv.tv_usec;
-#endif
-}
 
 // set "i" to 1 to include the trailing NUL char -- 0 otherwise
 void dynarray_add(int type, char *r, int32_t i)
 {
-	char *p;
+	uint8_t *p;
 	// note: there is so much room to store data that it is not necessary to check for overflows
 	p = da_buffers[type] + da_tot_entrylen[type];
 	while (*r != 0) *(p++) = *(r++), ++i;
@@ -142,7 +138,7 @@ void dynarray_add(int type, char *r, int32_t i)
 void pack_da_bufs()
 {
 	int i, j, k;
-	char *p, *c, *s;
+	uint8_t *p, *c, *s;
 	i = 7;
 	k = 0;
 	s = (char *) wrksp + wrk_size;
@@ -157,7 +153,7 @@ void pack_da_bufs()
 		while (--j >= 0) *(c++) = *(p++);			// copyup the data
 		da_buffers[i] = s;							// and point at the new buffer location
 	}
-	wrksp_top = (uint8_t *) s;
+	wrksp_top = s;
 	wrk_rem = wrk_size - k;
 }
 
@@ -323,7 +319,10 @@ int parse_args(int argc, char **argv)
 				++popt;
 				p1 = popt->name;
 				if (p1 == NULL)
-					cmd_error("Invalid option -- ", r);
+				{
+					show_error(0, "Invalid option -- ", r, 1, NULL);
+					exit (1);
+				}
 				r1 = r + 1;						// r points to the '-' just before the option name
 				while (*r1 == *p1) ++r1, ++p1;
 			} while (*p1 != '\n');				// if p1 gets all the way to the \n, then it's a match
@@ -332,7 +331,10 @@ int parse_args(int argc, char **argv)
  				if (*r1 == '\0')
 				{
 					if (optind >= argc || (popt->flags & TCC_OPTION_NOSEP) != 0)
-						cmd_error("Missing argument to ", r);
+					{
+						show_error(0, "Missing argument to ", r, 1, NULL);
+						exit (1);
+					}
 					// if the arg does not immediately follow the option, then it must always be the next argv
 					r1 = argv[optind++];
 				}
@@ -347,7 +349,7 @@ int parse_args(int argc, char **argv)
 	switch(popt->index) {
 	case TCC_OPTION_HELP:
 		help();
-		exit(1);
+		exit(0);
 	case TCC_OPTION_I:
 		dynarray_add(INCLUDE_PATHS, r1, 1);
 		//    add_dynarray_path(s, optarg, &tccg_include_paths);
@@ -453,7 +455,7 @@ int parse_args(int argc, char **argv)
    default:
     if (tccg_warn_unsupported) {
 unsupported_option:
-     warning("unsupported option '%s'", r);
+     show_error (1, "unsupported option '%s'", r, 1, NULL);
     }
    }		// end of switch on options
 		}
@@ -465,17 +467,32 @@ unsupported_option:
 	return optind;
 }
 
+/*
+void bench(int64_t t)
+{
+	uint32_t mil, sec;
+	t - microseconds() - t;
+	mil = (t + 1000) / 1000;
+	sec = mil / 1000;
+
+	printf("%d idents, %d lines, %d bytes, %d.%03d s, %d lines/s, %0.1f MB/s\n", 
+		tok_ident, total_lines, total_bytes,
+		sec, mil, (total_lines * 1000 / mil), 
+		((float) total_bytes / mil) / 1000); 
+} */
+
+
 int main(int argc, char *argv[])
 {
 	char *p;
-	int64_t start_time;
-	start_time = getclock_us();
+	int64_t t;
+	t = microseconds();
 
 	// parse argv[0] to determine how qcc was called -- ie. to decide what the user wants it to do
 	p = argv[0];
 	while (*p != 0) ++p;		// scan to the end of the string
 // look at the preceding chars (discard extensions, find the executable name?)
-	p -= 7;
+	p -= 7;			// HIHI! just fakery for now
 
 	onetime_init();
 
@@ -493,20 +510,8 @@ int main(int argc, char *argv[])
 	if (*p == 'e' && p[1] == 'w' && p[2] == 'c')
 		return compile ();
 
-	/*
-    if (do_bench) {
-        double total_time;
-        total_time = (double)(getclock_us() - start_time) / 1000000.0;
-        if (total_time < 0.001)
-            total_time = 0.001;
-        if (total_bytes < 1)
-            total_bytes = 1;
-        printf("%d idents, %d lines, %d bytes, %0.3f s, %d lines/s, %0.1f MB/s\n", 
-               tok_ident, total_lines, total_bytes,
-               total_time, (int)(total_lines / total_time), 
-               total_bytes / total_time / 1000000.0); 
-    }
-*/
+//    if (benchmark != 0) bench(t);
+//	bench(t);
 	return 0;
 }
 

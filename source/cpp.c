@@ -1,72 +1,31 @@
-// possible mods:
-// turn max_names_per_hash into a shift? -- it would eliminate 3 rare mults
-
 struct pp_recursion_info {
-	int depth;					// recursion depth for nested included files
-	int fd;						// source file descriptor
-	uint32_t line_num;
-	int state;					// state machine info used only in read_compressed
 	char *fname;				// the current source file being parsed (can be modified by #line)
+	uint32_t line_num;
+	int fd;						// source file descriptor
+	// the above 3 lines MUST REMAIN CONSISTENT with struct pass_info
+	int depth;					// recursion depth for nested included files
+	int state;					// state machine info used only in read_compressed
 	uint8_t *buf_top;			// a pointer to the terminating NUL + 1 in the input buffer
 	uint8_t *unget;				// storage for "ungetted" bytes in read_compressed
-	struct pp_recursion_info *parent_ptr;
 };
 
 
 int tokenize_op(uint8_t *s, uint8_t *d, int prep_flg);
 int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, long double *ldp, int32_t ldblcnt);
 uint8_t detect_c_keyword(uint8_t *name, uint32_t len);
+void show_error(int level, char *str1, char *r, int how_far, struct pass_info *inf);
+void handle_emit_overflow();
+
 
 static uint16_t off[256];			// just a little reusable array
 
 
-// special preprocessor byte "tokens"
+// special preprocessor byte "tokens" -- but they aren't really tokens
 #define ESCNL_TOK			0x18			// a standin for \ \n
 #define ESCCHAR_LE7F		0x1b			// the next input byte must be considered as a literal, after the 0x80 bit is removed
 #define ESCCHAR_GT7F		0x1c			// the next input byte must be considered as a literal (value >= 0x80)
 #define PSEUDO_NL			0x1d			// this byte is treated as a newline by the preprocessor
 #define ESCCHAR_TOK			0x1f			// the next input byte has already been tokenized
-
-
-// how_far indicates the amount of data to show from *r
-// 0 = show one byte, 1 = show one "word", -1 = show two "words"
-void show_error(int level, char *str1, char *r, int how_far, struct pp_recursion_info *inf)
-{
-	char *p;
-	int len;
-// HIHI!! dump the tree of includes and line numbers
-	if (level == 0)
-	{
-		write (2, "Error: ", 7);
-		++total_errs;
-	}
-	else if (level > 0)
-	{
-		write (2, "Warning: ", 9);
-		++total_warns;
-	}
-// else write (??, "info: ", 6); ?? -- If I send it to a non-2 fd, I have to do it *everywhere*
-	write (2, str1, strlen(str1));
-	if (r != NULL)
-	{
-		if (how_far == 0) len = 1;
-		else
-		{
-			len = 0;
-			p = r;
-			while (*p != ' ' && *p != '\n' && *p != 0) ++p, ++len;
-			if (how_far < 0 && *p == ' ')
-			{
-				++p;
-				++len;
-				while (*p != ' ' && *p != '\n' && *p != 0) ++p, ++len;
-			}
-		}
-// HIHI!! if len == 1 and *r is non-printable, then do some cute display of it -- or should I do that for ALL non-printables in r?
-		write (2, r, len);
-	}
-	write (2, "\n", 1);
-}
 
 
 // this code is only called if *p is pointing to a /x or /digit
@@ -246,7 +205,7 @@ read_more:
 					if (*p == 0) *(sp++) = '\\';		// unget the stray
 					else *(c++) = ESCNL_TOK, ++p;		// emit an escaped NL, skip the \n
 				}
-				else show_error (1, "unexpected \\ in input stream ignored", NULL, 1, inf);	
+				else show_error (1, "unexpected \\ in input stream ignored", NULL, 1, (struct pass_info *) inf);	
 			}
 			if (i != BOL_STATE) ++p;
 			break;
@@ -260,7 +219,7 @@ read_more:
 			break;
 
 		case EOL_COMMENT_STATE:				// EOL comment state
-			while (stoppers[*p] == 0) ++p;	// discard to EOL or EOF
+			while (stoppers[*p] == 0) ++p;	// discard to EOL or EOF -- XXX: MSVC does a discard to an *unescaped* EOL!
 			if (*p != 0) i = BOL_STATE;
 			break;
 
@@ -307,14 +266,14 @@ read_more:
 				}
 				else *(sp++) = *(p++);		// unget the \,  point at the 0
 			}
-			else if (*p != '\'') show_error(0,"missing closequote: saw ", (char *) p, 0, inf);
+			else if (*p != '\'') show_error(0,"missing closequote: saw ", (char *) p, 0, (struct pass_info *) inf);
 			else ++p;					// step past the closequote
 			break;
 
 		case CHAR_LITRL_STATE:			// single char literal (singlequoted)
 			if (*p == '\n' && j == 0)
 			{
-				show_error(0,"newline in char constant / missing closequote", NULL, 1, inf);
+				show_error(0,"newline in char constant / missing closequote", NULL, 1, (struct pass_info *) inf);
 				i = BOL_STATE;
 				--p;
 			}
@@ -379,7 +338,7 @@ read_more:
 				// since this is a fatal compilation error, there is no need to emit the string -- discard it?
 	// XXX: should two doublequotes be emitted to *c, though?
 				sp = emit_ptr;
-				show_error(0,"newline encountered inside string constant", NULL , 1, inf);
+				show_error(0,"newline encountered inside string constant", NULL , 1, (struct pass_info *) inf);
 			}
 			else if (*p == '\\')
 			{
@@ -392,7 +351,7 @@ read_more:
 				// since this is a fatal compilation error, there is no need to emit the string -- discard it?
 	// XXX: should two doublequotes be emitted?
 				sp = emit_ptr;
-				show_error(0,"string constant too long to parse", NULL , 1, inf);
+				show_error(0,"string constant too long to parse", NULL , 1, (struct pass_info *) inf);
 			}
 			break;
 
@@ -569,7 +528,7 @@ uint8_t *pp_bypass(uint8_t *p, uint16_t type, struct pp_recursion_info *inf)
 				if (recur_depth == 0)
 				{
 					if (type == 0) break;
-					else show_error(0, "#elif after #else", NULL, 1, inf);
+					else show_error(0, "#elif after #else", NULL, 1, (struct pass_info *) inf);
 				}
 				// continue looking for the #endif for this #if/elif -- discard to an unescaped EOL
 				unescaped_EOL(&p, NULL, 0, inf);
@@ -591,7 +550,7 @@ uint8_t *pp_bypass(uint8_t *p, uint16_t type, struct pp_recursion_info *inf)
 				if (recur_depth == 0)
 				{
 					if (type == 0) break;
-					else show_error(0, "another #else after #else", NULL, 1, inf);
+					else show_error(0, "another #else after #else", NULL, 1, (struct pass_info *) inf);
 				}
 				// continue looking for the #endif for this #if/else
 			}
@@ -649,8 +608,8 @@ int32_t eval_fn_macro(uint8_t **rawdef, uint8_t *stor, struct pp_recursion_info 
 		}
 //		else if (*p != ')') show_error  HIHI!!
 	}
-	// reemit the 2 and the arg count -- HIHI!! also verify argcnt < 255!
-	*(outp++) = 2;
+	// reemit the 4 and the arg count -- HIHI!! also verify argcnt < 255!
+	*(outp++) = TOK_O_PAREN;
 	*(outp++) = (uint8_t) i;
 
 	// then parse and output the definition string -- find all occurrences of all arguments
@@ -671,7 +630,7 @@ int32_t eval_fn_macro(uint8_t **rawdef, uint8_t *stor, struct pp_recursion_info 
 				c = *rawdef + off[k];
 				if (strncmp ((const char *) c,(const char *) sp, j) == 0 && alnum_[c[j]] == 0)
 				{
-					*(outp++) = 2;			// flag char for an argument
+					*(outp++) = TOK_O_PAREN;			// flag char for an argument
 					*(outp++) = (uint8_t) k + 1;		// arg num
 					k = j = 0;				// kill the loop and flag a match
 				}
@@ -706,6 +665,7 @@ int32_t eval_fn_macro(uint8_t **rawdef, uint8_t *stor, struct pp_recursion_info 
 
 // build the function-like macro argument pointer array
 // p should be pointing at the open paren of a function-like macro with up to argcnt arguments
+// HIHI!! for error messages, it would be nice to have a pointer to the macro name
 uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_info *inf)
 {
 	uint32_t len, i;
@@ -729,7 +689,7 @@ uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_i
 	}
 	if (*p != ')')
 	{
-		show_error(0, "could not find close paren for function-like macro", NULL, 1, inf);
+		show_error(0, "could not find close paren for function-like macro", NULL, 1, (struct pass_info *) inf);
 		return len;
 	}
 	i = 0;
@@ -743,7 +703,12 @@ uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_i
 		while (*sp == ' ') ++j, ++sp;
 	}
 	*p = 0;
-	while (i < (uint32_t) argcnt) off[i++] = j;			// finish out all argcnt entries of off
+	if (i > argcnt)
+		show_error(0, "too many macro arguments", NULL, 1, (struct pass_info *) inf);
+	else
+	{
+		while (i < (uint32_t) argcnt) off[i++] = j;			// finish out all argcnt entries of off
+	}
 	return len;				// return the length just past the final NUL = close paren
 }
 
@@ -856,31 +821,47 @@ int32_t get_name_idx(uint8_t hashval, uint8_t **symname, int32_t len, int insert
 }
 
 
+// if a macro is being redefined, only complain if the def is *different*
+int compare_macros(uint8_t *m1, uint8_t *m2)
+{
+	if (*m1 == '\n') m1 = m1cstr;
+	if (*m2 == '\n') m2 = m1cstr;
+	while (*m1 == *m2 && *m1 != 0) ++m1, ++m2;
+	if (*m1 == 0) return 1;
+	return 0;
+}
+
+
 // attempting to #define something -- put it all in the name hash and string tables
 uint8_t *pp_build_name(uint8_t *mname, uint8_t *p, uint8_t hash, int32_t len, struct pp_recursion_info *inf)
 {
-	uint8_t *c;
+	uint8_t *c, *s;
 	int32_t i, j, k;
 	uint32_t *handle_tbl;
+
 // HIHI!! verify that max_names_per_hash * 1k + namestr_len + len + MAX_STRING_SIZE won't overflow
 // -- if it would, either copy up or write out the emitted data!
 	if (max_names_per_hash * 1024 + namestr_len + len + MAX_STRBUF_SIZE > wrk_used_base)
 		i = 0;
 	// copy the name into the string table
 	c = name_strings + namestr_len;
-	alt_strncpy((char *) c, (char *) mname, len);
-	c += len + 1;			// need this pointer for saving the definition string
+	s = mname;
+	i = len;
+	while (--i >= 0) *(c++) = *(s++);
+	*(c++) = 0;					// need this pointer for saving the definition string
+	s = mname;
 
 	// find the insertion point in the token list -- verify whether it's a duplicate
 	handle_tbl = (uint32_t *) wrksp;
-	i = get_name_idx(hash, &mname, len, 1);
+	i = get_name_idx(hash, &s, len, 1);
 
 	if (i < 0)			// got an illegal match -- name is already defined
 	{
-		show_error(0, "redefinition of macro ", (char *) mname, 1, inf);
-		// possible different error "(benign) redefinition of type" -- for typedefs  HIHI
+		if (compare_macros(s, p) == 0)
+			show_error(0, "redefinition of macro ", (char *) mname, 1, (struct pass_info *) inf);
 		unescaped_EOL(&p, NULL, 0, inf);
 		return p;
+		// warning "benign redefinition of type" -- for typedefs (except I'm not looking at typedefs here anymore)
 	}
 	k = max_names_per_hash - 1;						// create a mask for the length of each hash list
 	if ((i & k) == k || handle_tbl[i] != 0)			// is the insertion point free?
@@ -911,9 +892,15 @@ uint8_t *pp_build_name(uint8_t *mname, uint8_t *p, uint8_t hash, int32_t len, st
 	if (*p == TOK_O_PAREN)			// parse this "function-like macro"
 		namestr_len += len + 1 + eval_fn_macro(&p, c, inf);
 
-	else			// standard #define -- store it verbatim
-// HIHI!!!! if the definition is EMPTY, it should be replaced with a -1 (string)!!
+	else			// standard #define -- store it verbatim (unless it's empty)
+	{
+		if (*p == '\n')
+		{
+			*--p = '1';			// empty defines get set to "-1"
+			*--p = '-';
+		}
 		namestr_len += len + 1 + unescaped_EOL(&p, c, 1, inf);
+	}
 
 	return p;
 }
@@ -996,7 +983,7 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 	uint8_t *c[2], *s, *d, *s1, toggle, h;
 	int32_t i, j;
 	uint64_t *llp;
-	long double *ldp;
+	double *ldp;
 
 	*c = emit_ptr + 4;						// make two buffers in the work area
 	c[1] = *c + MAX_MACRO_STRING;
@@ -1062,7 +1049,7 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 							{
 								if (*s1 != ')')
 								{
-									show_error(0, "preprocessor 'defined()' keyword requires close parentheses", NULL, 1, inf);
+									show_error(0, "preprocessor 'defined()' keyword requires close parentheses", NULL, 1, (struct pass_info *) inf);
 									return 0;
 								}
 								++s1;
@@ -1123,32 +1110,17 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 	*llp = 0;
 //	*ldp = 0.0;		HIHI -- should this be [255]?
 
-	i = TOK_SIZEOF + 1;			// first token that is available to use as an index in the preprocessor
-	j = 256;
+	i = TOK_SIZEOF + 2;			// first token that is available to use as an index in the preprocessor
+	j = 255;
 	while (*s != 0)
 	{
 		if (*s >= '0' && *s <= '9')				// numbers always must start with a digit (minus signs are treated as operators)
 		{
-			h = 0;			// assume int
-			// skip a 0x or 0b, then look for a radix point
-			s1 = s + 1;
-			if (*s == '0' && ((*s1 | 0x20) == 'x' || (*s1 | 0x20) == 'b')) ++s1;
-			while (hex_lkup[*s1] >= 0) ++s1;
-			// the next byte MUST be a radix point, or it's not a float
-			if (*s1 == '.') h = 1;
-
-			// HIHI!!! since I'm about to take control of both floatscan and intscan -- combine them, and have them figure out for
-			// themselves whether the value is int or float?
+			h = num_parse(s, &s, &llp[i - TOK_SIZEOF - 1], &ldp[j - TOK_SIZEOF - 1], NULL, NULL);
 			if (h == 0)
-			{
-				llp[++i - TOK_SIZEOF - 1] = strtoull((const char *) s, (char **) &s, 0);
-				*(d++) = (uint8_t) i;
-			}
+				*(d++) = (uint8_t) i++;
 			else
-			{
-				ldp[--j - TOK_SIZEOF - 1] = strtold((const char *) s, (char **) &s);
-				*(d++) = (uint8_t) j;
-			}
+				*(d++) = (uint8_t) j--;
 		}
 		else if (c_ops[*s] != 0)
 		{
@@ -1185,23 +1157,6 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 }
 
 
-// HIHI!! move this fn out of cpp -- it's generic! into libc_compat, perhaps?
-void handle_emit_overflow()
-{
-	int i;
-	char *b = (char *) wrksp + wrk_used_base;
-	i = (char *) emit_ptr - b;
-	if (outfd < 0)
-	{
-		outfd = qcc_create("hi1");
-//		outfd = qcc_create(inout_fnames[iof_in_toggle ^ 1]);		// HIHI need to init inout_fnames, still
-// HIHI and what happens if the open fails? show_error? fatal error and die? It can't be a show_error if I make it generic.
-	}
-	write (outfd, b, i);			// dump out the entire emit buffer
-	emit_ptr = (uint8_t *) b;		// and reset the emit ptr back to base
-}
-
-
 int32_t name_lookup(uint8_t *p, struct pp_recursion_info *inf)
 {
 	uint8_t *c;
@@ -1235,13 +1190,15 @@ void cpp_parse(uint8_t *p, struct pp_recursion_info *pinfo)
 
 	// init some parts of the ninfo struct from the parent -- ninfo is used when including nested files
 	ninfo.depth = pinfo->depth + 1;
-	ninfo.parent_ptr = pinfo;
+//	ninfo.parent_ptr = pinfo;
 
 	// loop over the source file until it is fully processed
 	while (*p != 0)
 	{
 		bypass_flg = 0;
 		while (*p == ' ') ++p;
+		if (pinfo->fname[0] == 'l' && pinfo->fname[1] == 'i' && pinfo->line_num > 130)			// HIHI!! debugging!!
+			i = 0;
 
 		switch (*p)
 		{
@@ -1286,7 +1243,7 @@ bypass_done:
 					{
 						while (*p != '\"' && *p != '\n') ++p, ++j;
 						if (*p != '"') goto unrecognized;
-						sp = (uint8_t *) da_buffers[INCLUDE_PATHS];
+						sp = da_buffers[INCLUDE_PATHS];
 					}
 					else
 					{
@@ -1317,7 +1274,7 @@ bypass_done:
 					if (ninfo.fd < 0)
 					{
 						*p = 0;			// p is pointing at the closequote on the fname
-						show_error(0, "File not found, trying to include file ", (char *) c, 1, pinfo);
+						show_error(0, "File not found, trying to include file ", (char *) c, 1, (struct pass_info *) pinfo);
 						*p = '"';
 						goto discard;
 					}
@@ -1333,7 +1290,13 @@ bypass_done:
 					read_compressed (&ninfo, NULL, 0);
 					// prepare to recurse
 					cpp_parse(wrksp_top, &ninfo);
-	// HIHI!!! emit another 0x1a comment with the current filename and line number!
+					*(emit_ptr++) = TOK_LINEFILE;
+					i = 8;
+					while (--i >= 0) *(emit_ptr++) = hexout[(pinfo->line_num >> (i * 4)) & 0xf];
+	// HIHI!! woops! I have a big problem if the emitted code with the fname in it got swapped to disk!!
+					c = (uint8_t *) pinfo->fname;
+					while (*c != 0) *(emit_ptr++) = *(c++);
+					*(emit_ptr++) = 0;
 				}
 				else if (j == SIMHASH_DEFINE)
 				{
@@ -1352,7 +1315,7 @@ bypass_done:
 						p = pp_build_name(c, p, hsh_val, i, pinfo);
 					}
 					else
-						show_error(0, "attempt to redefine a reserved keyword: ", (char *) c, 1, pinfo);
+						show_error(0, "attempt to redefine a reserved keyword: ", (char *) c, 1, (struct pass_info *) pinfo);
 				}
 				else if (j == SIMHASH_IF)
 				{
@@ -1463,7 +1426,7 @@ bypass_done:
 				else
 unrecognized:
 					// unrecognized preprocessor command
-					show_error (0, "Preprocessor command can not be parsed #", (char *) sp, -1, pinfo);
+					show_error (0, "Preprocessor command can not be parsed #", (char *) sp, -1, (struct pass_info *) pinfo);
 discard:
 				// the 0x1d character is treated like a special newline for preprocessor commands only
 				while (*p != '\n' && *p != 0x1d && *p != ESCNL_TOK && *p != 0) ++p;		// preprocessor commands always discard to EOL
@@ -1484,8 +1447,8 @@ discard:
 
 		case ESCCHAR_LE7F:			// "escape" byte flags for literal char constants -- emit two raw bytes
 		case ESCCHAR_GT7F:
-			// note: literal bytes are guaranteed to have values less than 256, so they are never counted in nxt_pass_info[2]
-			++nxt_pass_info[3];			// but are always counted as numeric values
+			// note: literal bytes are guaranteed to have values less than 256, so they are never counted in nxt_pass_info[PP_BIG_NUMS]
+			++nxt_pass_info[PP_NUM_CNT];			// but are always counted as numeric values
 			*(emit_ptr++) = *(p++);
 			// cheat and fall through to copy the second byte
 
@@ -1496,11 +1459,12 @@ discard:
 		case '"':						// all escaped newlines have already been removed from inside string constants
 			sp = p;
 			*(emit_ptr++) = *(p++);
-			while (*p != '\"' && *p != '\n' && *p != 0) *(emit_ptr++) = *(p++);
-			if (*p == '\n') show_error(0,"newline in string constant", NULL, 1, pinfo);
-			else if (*p == 0) show_error(0,"unmatched doublequotes at EOF", NULL, 1, pinfo);
+			while (*p != '"' && *p != '\n' && *p != 0) *(emit_ptr++) = *(p++);
+// HHI!! save a max length = p - sp?
+			if (*p == '\n') show_error(0,"newline in string constant", NULL, 1, (struct pass_info *) pinfo);
+			else if (*p == 0) show_error(0,"unmatched doublequotes at EOF", NULL, 1, (struct pass_info *) pinfo);
 			else *(emit_ptr++) = *(p++);
-			*nxt_pass_info += p - sp;
+			nxt_pass_info[PP_ALNUM_SIZE] += p - sp;
 			break;
 
 		case '0':	case '1':			// emit pure numbers raw
@@ -1508,13 +1472,13 @@ discard:
 		case '4':	case '5':
 		case '6':	case '7':
 		case '8':	case '9':
-			++nxt_pass_info[3];			// total count of all numeric values
+			++nxt_pass_info[PP_NUM_CNT];			// total count of all numeric values
 			// overestimate a total count of numeric constants with values bigger than 255 (just do a quickie test)
 			// -- if there are more than 2 digits in the number or it's a float, then "it's bigger than 255"
 			c = p + 1;
 			if (*p == '0' && (p[1] | 0x20) == 'x') c += 2;
 			if ((hex_lkup[*c] >= 0 || *c == '.') && (hex_lkup[c[1]] >= 0 || c[1] == '.'))
-				++nxt_pass_info[2];
+				++nxt_pass_info[PP_BIG_NUMS];
 			while (alnum_[*p] != 0) *(emit_ptr++) = *(p++);			// emit the raw text into the output buffer
 			// note: if there is alpha crud on the end of the number, it will give a syntax error later
 			break;
@@ -1577,7 +1541,7 @@ discard:
 				}
 				else
 bad_3_:
-					show_error(0, "unknown preprocessor macro: ", (char *) sp, 1, pinfo);
+					show_error(0, "unknown preprocessor macro: ", (char *) sp, 1, (struct pass_info *) pinfo);
 				if (p - emit_ptr < 0x10000) handle_emit_overflow();
 			}
 			// if it wasn't a preprocessor directive, fall through into the alphanumeric case
@@ -1605,7 +1569,7 @@ bad_3_:
 			{
 				hsh_val = hash(c, (int) j);
 				i = get_name_idx(hsh_val, &c, j, 0);
-				if (i < 0)				// is it a known macro?
+				if (i < 0)							// is it a known macro?
 				{
 					emit_ptr = sp;					// remove the raw text from the output buffer
 					// c points at the definition string now
@@ -1632,9 +1596,9 @@ bad_3_:
 				}
 				else
 				{
-					*(emit_ptr++) = ' ';					// keep a whitespace between alphanumeric "words" for now
-					*nxt_pass_info += emit_ptr - sp;		// accumulate a total length
-					++nxt_pass_info[1];						// accumulate an overestimate count of unique alphanumeric strings
+					*(emit_ptr++) = ' ';								// keep a whitespace between alphanumeric "words" for now
+					nxt_pass_info[PP_ALNUM_SIZE] += emit_ptr - sp;		// accumulate a total length
+					++nxt_pass_info[PP_STRING_CNT];						// accumulate an overestimate count of unique alphanumeric strings
 				}
 			}
 			else		// tokenize all recognized keywords
@@ -1666,13 +1630,13 @@ bad_3_:
 			// verify that at least one complete line is still loaded -- to prevent infinite loops
 			c = p;
 			while (*c != '\n' && *c != 0) ++c;
-			if (*c == 0 && *p != 0) show_error(0, "line is too long to process", NULL, 1, pinfo);
+			if (*c == 0 && *p != 0) show_error(0, "line is too long to process", NULL, 1, (struct pass_info *) pinfo);
 
 		case 0:
 			break;
 
 		default:
-			show_error(0, "Unrecognized symbol ", (char *) p, 0, pinfo);
+			show_error(0, "Unrecognized symbol ", (char *) p, 0, (struct pass_info *) pinfo);
 			i = *(p++);		// unrecognized symbol! (`@$)
 
 		}		// end of switch on *p
@@ -1688,18 +1652,18 @@ int preprocess(int fd, char *fname)
 	int32_t i;
 	struct pp_recursion_info inf;
 
-	// read a few 30K gulps of the main source file -- compress out C comments and whitespace
+	// read one 30K gulp of the main source file -- compress out C comments and whitespace
 	inf.depth = 0;
 	inf.fname = fname;
 	inf.line_num = 1;
-	inf.parent_ptr = NULL;
+//	inf.parent_ptr = NULL;
 	inf.state = 0;
 	inf.fd = fd;
 	inf.buf_top = wrksp_top;
 	emit_ptr = wrksp;					// read_compressed needs a valid workspace ptr in emit_ptr
 	read_compressed(&inf, NULL, 0);
 
-	// In the preprocessor, "names" consist of #defined macro names and typedefs.
+	// In the preprocessor, "names" consist of #defined macros.
 	// The preprocessor does all the necessary substitutions on all the names,
 	// througout the main source file and all included files. The final preprocessed
 	// output is (of course) passed on to the next compilation stage, and all the
@@ -1723,19 +1687,17 @@ int preprocess(int fd, char *fname)
 	if (i > 2 * 1024 * 1024) i = 2 * 1024 * 1024;
 	wrk_used_base = i;
 	emit_ptr = wrksp + i;
+	*(emit_ptr++) = TOK_LINEFILE;			// must pre-emit the first "line" directive for the input file
+	i = 7;
+	while (--i >= 0) *(emit_ptr++) = '0';						// set line number to 00000001
+	*(emit_ptr++) = '1';
+	emit_ptr += alt_strcpy ((char *) emit_ptr, fname) + 1;		// include the NUL on the filename
 
 	// copy in the global predefines now, for processing -- as text, prepended to the source file
 	i = da_tot_entrylen[PREDEFINES];
 	memmove (wrksp_top - i, da_buffers[PREDEFINES], i);
-
 	memset (nxt_pass_info, 0, 16);
 	outfd = -1;
-
-	*(emit_ptr++) = TOK_LINEFILE;			// must pre-emit the first "line" directive for the input file
-	i = 7;
-	while (--i >= 0) *(emit_ptr++) = '0';					// set line number to 1
-	*(emit_ptr++) = '1';
-	emit_ptr += alt_strcpy ((char *) emit_ptr, fname) + 1;		// include the NUL on the filename
 
 	// process the input source file to completion, and recursively descend into any included files
 	cpp_parse(wrksp_top - i, &inf);
