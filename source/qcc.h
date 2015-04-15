@@ -137,6 +137,8 @@ struct pass_info
 #define TOK_TYPE_STRUCT		0x80
 #define TOK_TYPE_IDENT		0xc0
 
+
+// hash values (from the "simhash" algorithm) needed by the preprocessor
 #define TWENTY2EXP7			0x94ace180
 #define SIMHASH_INCLUDE		0x1c3d5ed6
 #define SIMHASH_DEFINE		0x016a5bdf
@@ -164,6 +166,10 @@ struct pass_info
 #define PP_STRING_CNT		1			// total count of alphanumeric strings
 #define PP_BIG_NUMS			2			// total count of numeric constants with "big" values
 #define PP_NUM_CNT			3			// total count of numeric constants
+
+// -- and in the tokenizer
+#define TK_MAX_DEFLEN		0			// longest length of typedef, struct, union, or enum seen
+#define TK_CUR_DEFLEN		1			// length of current typedef, struct, union, or enum
 
 
 struct Sym {

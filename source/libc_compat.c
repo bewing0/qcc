@@ -18,7 +18,7 @@
 
 
 // strcpy that returns the length of the string
-int alt_strcpy(char *to, char *from)
+int alt_strcpy(uint8_t *to, uint8_t *from)
 {
 	int i;
 	i = 0;
@@ -85,7 +85,7 @@ void read_tok(uint8_t **p, struct pass_info *inf)
 {
 	int32_t i;
 	uint8_t *c, *s;
-	s = wrksp_top;	// if an input file exists, then wrksp_top is always 30K below wrk_rem
+	s = wrksp_top;	// if an input file exists, then wrksp_top always points to a 30K read buffer
 	c = *p;			// perform the copydown, get the length
 	i = 0;
 	while (*c != TOK_ENDOFBUF)
@@ -94,11 +94,13 @@ void read_tok(uint8_t **p, struct pass_info *inf)
 		++i;
 	}
 	i = read (inf->infd, s, 30 * 1024 - i);
+	wrksp_top[i] = TOK_ENDOFBUF;
 	if (i == 0)
 	{
 		close (inf->infd);
 		inf->infd = -1;
 	}
+	*p = wrksp_top;
 }
 
 

@@ -216,7 +216,7 @@ void show_version(void)
 // printf("tinycc version " TINYCC_VERSION "\n");
 }
 
-//void help(TCCState *s)
+
 void help()
 {
  show_version();

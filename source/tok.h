@@ -103,6 +103,7 @@
 #define TOK_WHILE		87
 
 // HIHI whem I'm certain that this is all of them, pack these final tokens down with the others
+#define TOK_FUNCT_PTR	121
 #define TOK_NONAME_IDX	122			// for structs etc., where the name is left blank
 #define TOK_NAME_IDX	123			// for strings, types, names, etc.
 #define TOK_INT_CONST	124			// integer constant

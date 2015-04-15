@@ -1,3 +1,5 @@
+// PASS #1 -- preprocess (with a little bit of extra functionality)
+
 struct pp_recursion_info {
 	char *fname;				// the current source file being parsed (can be modified by #line)
 	uint32_t line_num;
@@ -11,7 +13,7 @@ struct pp_recursion_info {
 
 
 int tokenize_op(uint8_t *s, uint8_t *d, int prep_flg);
-int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, long double *ldp, int32_t ldblcnt);
+int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, double *ldp, int32_t ldblcnt);
 uint8_t detect_c_keyword(uint8_t *name, uint32_t len);
 void show_error(int level, char *str1, char *r, int how_far, struct pass_info *inf);
 void handle_emit_overflow();
@@ -1279,7 +1281,9 @@ bypass_done:
 						goto discard;
 					}
 		// HIHI if being verbose? -- write (1, emit_ptr, strlen(emit_ptr)); -- and then a \n?
-					while (*emit_ptr != 0) ++emit_ptr;				// emit_ptr contains a good NUL-terminated "comment"
+					// eventually, the LINEFILE info gets put in the string table
+					nxt_pass_info[PP_ALNUM_SIZE] += 8 + strlen((const char *) emit_ptr);
+					while (*emit_ptr != 0) ++emit_ptr;				// emit_ptr contains a good NUL-terminated string
 					++emit_ptr;
 					while (*p != '\n' && *p != ESCNL_TOK) ++p;		// discard to EOL, in order to create a good return point
 					wrksp_top = p;									// -- and to calculate a good value for wrksp_top
@@ -1293,7 +1297,8 @@ bypass_done:
 					*(emit_ptr++) = TOK_LINEFILE;
 					i = 8;
 					while (--i >= 0) *(emit_ptr++) = hexout[(pinfo->line_num >> (i * 4)) & 0xf];
-	// HIHI!! woops! I have a big problem if the emitted code with the fname in it got swapped to disk!!
+	// HIHI!! woops! I have a big problem if the emitted code with the fname in it got swapped to disk!! -- I'll be using malloc to fix this.
+					nxt_pass_info[PP_ALNUM_SIZE] += 8 + strlen(pinfo->fname);
 					c = (uint8_t *) pinfo->fname;
 					while (*c != 0) *(emit_ptr++) = *(c++);
 					*(emit_ptr++) = 0;
@@ -1656,7 +1661,6 @@ int preprocess(int fd, char *fname)
 	inf.depth = 0;
 	inf.fname = fname;
 	inf.line_num = 1;
-//	inf.parent_ptr = NULL;
 	inf.state = 0;
 	inf.fd = fd;
 	inf.buf_top = wrksp_top;

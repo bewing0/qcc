@@ -1,10 +1,20 @@
+// PASS #2 -- tokenize
+
+// Tokenizing converts keywords, names, and operators into single bytes.
+// The basic point is that it is much easier and faster to process single bytes than it is to process "words"
+// -- even if the two are defined to have identical meanings. The switch statement is especially efficient
+// when processing streams of bytes. Some disambiguation is also done for characters that are used in multiple
+// contexts, such as the '-' character in --, -=, ->, - (unary) and - (binary).
+// Converting multiple bytes into single bytes also reduces the memory requirements, which helps in the effort
+// to keep the entire file packed in memory at all times for speed.
+
 // HIHI!! pass in an inf for error messages
 // put *unique* strings into the string table
 int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 {
 	int32_t i, j, k;
 	uint32_t *handle_tbl;
-// HIHI!! verify that max_names_per_hash * 1k + namestr_len + len + MAX_STRING_SIZE won't overflow inf->llp
+// XXX: verify that max_names_per_hash * 1k + namestr_len + len + MAX_STRING_SIZE won't overflow inf->llp
 // -- if it would, do a major_copyup()
 //	if (max_names_per_hash * 1024 + namestr_len + len + MAX_STRBUF_SIZE > the int storage array??)
 //		i = 0;
@@ -16,7 +26,7 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 	i = get_name_idx(hash, &name, len, 1);
 
 	if (i < 0)										// got a match -- name is already defined
-		return handle_tbl[-i - 1];
+		return handle_tbl[-i - 1] >> TOK_STROFF_SHFT;
 
 	k = max_names_per_hash - 1;						// create a mask for the length of each hash list
 	if ((i & k) == k || handle_tbl[i] != 0)			// is the insertion point free?
@@ -26,7 +36,7 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 		while (handle_tbl[j] != 0) ++j;		// j = the current END of the column
 		if ((j & k) == k)					// time to expand the handle table?
 		{
-//			double_handle_table_size();		-- need to make this routine more generic, so it can copyup a generic list of arrays
+//			double_handle_table_size();		-- XXX: must make this routine more generic, so it can copyup a generic list of arrays
 			// recalculate i, j, and k with the new nph value
 			j = hash * max_names_per_hash + (j & k);
 			i = hash * max_names_per_hash + (i & k);
@@ -41,32 +51,43 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 	}
 
 	// build the name handle -- namestr_len is the *offset* to the definition
-// HIHI!! should I make it "len - 1"? And I may need to have a "size multiplier" in there, too?
+	// (this name handle convention must remain compatible with get_name_idx)
 	handle_tbl[i] = len | (namestr_len << 8);
+	k = namestr_len;
 	namestr_len += len + 1;
-	return handle_tbl[i];
+	return k;
 }
 
 
 void tok_pass(struct pass_info *inf)
 {
-	uint8_t *p, *c, hsh_val;
+	uint8_t *p, *c, *sp;
+	int8_t level, def_flg;
 	int32_t i;
 	uint32_t j;
 	uint64_t ll;
 	double d;		// HIHI!! removing this later
 
+	nxt_pass_info[TK_MAX_DEFLEN] = 0;
+	level = def_flg = 0;		// "currently defining a structure" flag
 	p = wrksp_top;
+	sp = p;						// eliminate a compiler warning
 	while (1)
 	{
 		switch (*p)
 		{
 		case ESCCHAR_TOK:
-			// parse for anonymous struct, union, and enum tokens
-			if (*++p == TOK_ENDOFBUF) break;		// HIHI!! must unget 1 char and go read
-			else if (*p == TOK_STRUCT || *p == TOK_UNION || *p == TOK_ENUM)
+			++p;				// don't need ESCCHARs anymore
+			if (def_flg == 0)
 			{
-				if (p[1] == TOK_ENDOFBUF) break;		// HIHI!! must unget 1 char and go read
+				sp = emit_ptr;										// save a ptr to starts of defs
+				nxt_pass_info[TK_CUR_DEFLEN] = 0;
+			}
+			if (*p == TOK_TYPEDEF && level == 0) def_flg = 2;		// parse a global typedef to the semicolon
+			// parse for anonymous struct, union, and enum tokens
+			if (*p == TOK_STRUCT || *p == TOK_UNION || *p == TOK_ENUM)
+			{
+				if (def_flg == 0 && level == 0) def_flg = -1;		// potentially start looking for a global "struct" definition
 				*(emit_ptr++) = *(p++);
 				// the current byte must be either the beginning of a name, or an open curly bracket?
 				if (alnum_[*p] == 0)
@@ -75,7 +96,7 @@ void tok_pass(struct pass_info *inf)
 					idx_tbl[idxidx++] = noname_cnt++;
 				}
 			}
-			else *(emit_ptr++) = *(p++);
+			else *(emit_ptr++) = *(p++);		// emit the token
 			break;
 
 		case ' ':
@@ -83,17 +104,15 @@ void tok_pass(struct pass_info *inf)
 			break;		// -- but that is no longer needed, so discard it
 
 		case ESCCHAR_LE7F:
-			if (*++p == TOK_ENDOFBUF) break;		// HIHI!! must unget 1 char and go read
+			++p;
 			i = *(p++) & 0x7f;
-			*(emit_ptr++) = TOK_INT_CONST;				// emit a "int constant token"
+			*(emit_ptr++) = TOK_INT_CONST;			// emit a "int constant token"
 			idx_tbl[idxidx++] = i;
 			break;
 
 		case ESCCHAR_GT7F:
-			if (*++p == TOK_ENDOFBUF) break;		// HIHI!! must unget 1 char and go read
-			// store the value verbatim as an int
-			// -- the first 256 faked entries in the llp array have values equal to their index
-			*(emit_ptr++) = TOK_INT_CONST;				// emit a "int constant token"
+			++p;									// store the escaped value verbatim as an int
+			*(emit_ptr++) = TOK_INT_CONST;			// emit a "int constant token"
 			idx_tbl[idxidx++] = *(p++);
 			break;
 
@@ -102,41 +121,45 @@ void tok_pass(struct pass_info *inf)
 		case '4':	case '5':
 		case '6':	case '7':
 		case '8':	case '9':
-			j = flt_cnt;
-			i = num_parse(p, &p, &ll, &d, &cman_tbl[j], &cexp_tbl[j]);
+			i = num_parse(p, &p, &ll, &d, &cman_tbl[flt_cnt], &cexp_tbl[flt_cnt]);
 			if (i == 0)
 			{
-				*(emit_ptr++) = TOK_INT_CONST;					// emit a "int constant token"
+				*(emit_ptr++) = TOK_INT_CONST;				// emit a "int constant token"
 				if ((ll & ~0x7fffffff) == 0)
 					idx_tbl[idxidx] = (uint32_t) ll;		// encode the value directly into the index tbl
 				else
 				{
-					cint_tbl[int_cnt] = ll;		// store the value in the "int" storage array
+					cint_tbl[int_cnt] = ll;					// store the value in the "int" storage array
 					idx_tbl[idxidx] = int_cnt++ | 0x80000000;
 				}
 			}
 			else						// the float values are already in ldmp and ldep
 				*(emit_ptr++) = TOK_FP_CONST;			// emit a "float constant token"
+				// idx_tbl[idxidx] = flt_cnt++;		HIHI!!!
 
 			++idxidx;
 			break;
 
 		case '"':
 			c = p;
-			j = 1;
-	// HIHI!!!! Problem with string lengths -- the table is set up to store values up to 255 only! Add one more bit, and multibyte resolution?
-	// or maybe 2 bits? have cpp pass the length of the LONGEST string -- and adjust to that, dynamically?
-			// 2 extra bits + 16 byte resolution gets me a 16K string, which is guaranteed to be enough!
-			while (*++p != '"') ++j;				// strings are stored with any escape chars
-			hsh_val = hash(c, (int) j);
-			j = tok_build_name(c, hsh_val, j);
-			idx_tbl[idxidx++] = j;					// the index array stores the packed string offset and length
-			*(emit_ptr++) = TOK_NAME_IDX;				// emit a "name token"
-			// all strings should either end on a space or a doublequote
-			if (*p == '"') ++p;
+			i = 1;
+			while (*++p != '"') ++i;				// strings are stored with any escape chars
+			// Note: these strings can be up to 15K in length, and the indexing mechanism can only handle 254
+			if (i > 255)
+			{
+				// store the string directly to name_strings	-- XXX: this codepath is untested!
+				idx_tbl[idxidx++] = namestr_len;
+				alt_strncpy ((char *) name_strings, (char *) c, i);
+				namestr_len += i + 1;
+			}
+			else
+			{
+				j = hash(c, i);
+				idx_tbl[idxidx++] = tok_build_name(c, (uint8_t) j, i);
+			}
+			*(emit_ptr++) = TOK_NAME_IDX;			// emit a "name token"
+			++p;			// skip the trailing dblquotes
 			break;
-			// If I really want to, I can keep track of the max len HERE, and ASSUME a multiplier of 16 or 64 initially,
-			// and then pack it down to the correct size at the end (and fix the index table, yuck)
 
 		case '_':				// "names" must start with an alpha char, or an '_'
 		case 'A':	case 'B':	case 'C':	case 'D':
@@ -154,89 +177,117 @@ void tok_pass(struct pass_info *inf)
 		case 'w':	case 'x':	case 'y':	case 'z':
 			c = p;
 			j = 1;
-			while (alnum_[*++p] != 0) ++j;				// strings are stored with any escape chars
-			hsh_val = hash(c, (int) j);
-			j = tok_build_name(c, hsh_val, j);
-			idx_tbl[idxidx++] = j;					// the index array stores the packed string offset and length
-			*(emit_ptr++) = TOK_NAME_IDX;				// emit a "name token"
+			while (alnum_[*++p] != 0) ++j;
+			i = hash(c, (int) j);
+			idx_tbl[idxidx++] = tok_build_name(c, (uint8_t i), j);		// the index array stores the string offset
+			*(emit_ptr++) = TOK_NAME_IDX;							// emit a "name token"
 			break;
 
+		case '{':
+			++level;
+			if (def_flg < 0) def_flg = 1;		// parse a struct/union/enum def between curly brackets
+			*(emit_ptr++) = TOK_OCURLY;
+			++p;
+			break;
+
+		case '}':
+			if (--level == 0 && def_flg != 0)
+			{
+				if (--def_flg == 0) goto def_term;
+			}
+			*(emit_ptr++) = TOK_CCURLY;
+			++p;
+			break;
+
+		case ',':
+		case ';':
+			if (level == 0 && def_flg > 0)		// does this terminate a definition?
+			{
+def_term:
+				// calculate the total length of this definition
+				j = nxt_pass_info[TK_CUR_DEFLEN] + (emit_ptr - sp) + 1;
+				// pass the *max* length of a defintion to the prototyping pass
+				if (j > nxt_pass_info[TK_MAX_DEFLEN]) nxt_pass_info[TK_MAX_DEFLEN] = j;
+				def_flg = 0;
+			}
+			// fall into tokenizing the op
 		case '(':	case ')':	case '=':	case '<':
 		case '>':	case '&':	case '|':	case '!':
 		case '+':	case '-':	case '*':	case '/':
 		case '%':	case '^':	case '~':	case '?':
-		case '[':	case ']':
-		case '{':	case '}':	case ':':	case ';':
-		case ',':	case '.':
+		case '[':	case ']':	case ':':	case '.':
 			j = (uint32_t) tokenize_op(p, emit_ptr, 0);
 			p += j;
 			++emit_ptr;
+			// HIHI!! must copy this line of code into the doublequote section? Anywhere else?
+			if (level == 0 && def_flg < 0) def_flg = 0;		// kill a potential struct def on anything other than an OCURLY
 			break;
 
 		case '\n':
 			i = 1;
-			while ((*p == '\n' || *p == ' ') && i < 255)		// HIHI!! may be able to go to 257
+			while (*p == '\n' || *p == ' ')
 			{
 				if (*++p == '\n') ++i;			// count runs of newlines
 			}
 			inf->line_num += i;
 			while (i > 2)			// compress long runs of newlines (happens often)
 			{
-				// emit a token for compressed newlines (subtract 2 from the count?)
+				// emit a token for compressed newlines
 				*(emit_ptr++) = TOK_RLL_NL;
 				j = i;
 				if (i > 258)
 				{
 					j = 258;
-					if (i < 260) j = 250;		// preferentially, do 2 run-length compressed emits
+					if (i < 260) j = 250;			// preferentially, do 2 run-length compressed emits
 				}
+				if (j == TOK_ENDOFBUF + 3) --j;		// an emitted value of 2 is special, and must not be output accidentally
 				i -= j;
 				*(emit_ptr++) = (uint8_t) (j - 3);
 			}
-			if (i == 1 || i == 2)
+			if (i > 0)
 			{
 				*(emit_ptr++) = TOK_NL;
 				if (--i > 0) *(emit_ptr++) = TOK_NL;
 			}
 			break;
 
-		default:
+//		default:
 	// show_error? -- somehow a garbage char ended up in the input stream!
-			i = 0;			// HIHI!!! should never trigger!
+//			i = 0;			// HIHI!!! should never trigger!
 
 		case TOK_ENDOFBUF:
-			// if the input filedescriptor is non-negative, read more!
-			if (inf->infd < 0) return;
-	// generic_read(inf);
-			break;
+			// the only way to get here is to hit EOF -- so return;
+			*(emit_ptr++) = TOK_ENDOFBUF;
+			return;
 
 		case TOK_LINEFILE:
-			// must prescan the line to make sure it is complete -- the logic cannot resume it properly
-			c = p + 1;
-			while (*c != 0 && *c != TOK_ENDOFBUF) ++c;
-//			if (*c != 0) do a copydown on the line before reading the next chunk
-
-			// reemit this whole directive back into the output stream
-			// first 8 bytes is line number as a hex char string (1bcd0408),
-			// then a NUL terminated filename
+			*(emit_ptr++) = TOK_LINEFILE;
+			// first 8 bytes is line number as a hex char string then a NUL terminated filename
+			c = name_strings + namestr_len;
 			i = 8;
 			j = 0;
 			while (--i >= 0)
 			{
-				*(emit_ptr++) = *++p;
+				*(c++) = *++p;
 				j += hex_lkup[*p] << (i * 4);
 			}
 			inf->line_num = j;
-			inf->fname = ++p;
-			while (*p != 0) *(emit_ptr++) = *(p++);
-			*(emit_ptr++) = *(p++);						// include the NUL
+			inf->fname = c;
+			j = alt_strcpy(c, ++p) + 1;				// include the NUL
+			idx_tbl[idxidx++] = namestr_len;
+			p += j;
+			namestr_len += j + 8;
 		}		// end of switch on *p
 
-		if ((emit_ptr - wrksp) > wrk_rem - 30 * 1024) handle_emit_overflow();
+		if ((uint32_t) (emit_ptr - wrksp) > wrk_rem - 30 * 1024)
+		{
+			if (def_flg != 0) nxt_pass_info[TK_CUR_DEFLEN] += emit_ptr - sp;
+			handle_emit_overflow();
+			sp = emit_ptr;
+		}
 
 		// guarantee there is always 16K minimum in the input buffer at all times
-		if ((p - wrksp) > wrk_rem - 16 * 1024)			// && inf->infd >= 0
-			i = 0;
+		if (inf->infd >= 0 && (uint32_t) (p - wrksp) > wrk_rem - 16 * 1024) read_tok (&p, inf);
 	}		// infinite loop
 }
 
@@ -295,7 +346,7 @@ void tokenize()
 	if (outf_exists != 0)
 	{
 		// open the file and read 30K in binary mode
-		wrksp_top = wrksp + wrk_rem - 30 * 1024;
+		wrksp_top = wrksp + wrk_rem - 30 * 1024 - 4;
 		inf.infd = qcc_open_r("hi1", 1);
 //		inf_infd = qcc_open_r(inout_fnames[??], 1);
 		j = qcc_read(inf.infd, (char *) wrksp_top, 30 * 1024);
@@ -356,6 +407,4 @@ void tokenize()
 // HIHI!! flip the iof_in_toggle?
 	}
 	finalize_tok(&inf);
-
-// HIHI!! may also be trying to pass on the total number of tokens in all the struct/union/etc definitions
 }

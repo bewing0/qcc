@@ -79,7 +79,7 @@
 
 #include "cpp.c"
 #include "token.c"
-#include "tspec.c"
+#include "proto.c"
 
 
 void onetime_init()
@@ -102,7 +102,7 @@ void onetime_init()
 
 	// build a lookup table for which chars are acceptable for function and variable names
 	// (alpha-numeric + '_')
-// HIHI prebuild these arrays as static consts?
+// prebuild these arrays as static consts?
 	memset (alnum_, 0, 256);
 	i = 'A';
 	while (i <= 'Z') alnum_[i++] = 1;
@@ -128,33 +128,33 @@ void onetime_init()
 
 	// build a lookup table to recognize C operators
 	memset (c_ops, 0, 256);
-	c_ops['('] = 2;				// HIHI convert these all to defined token IDs?
-	c_ops[')'] = 3;
-	c_ops['='] = 4;
-	c_ops['<'] = 5;
-	c_ops['>'] = 6;
-	c_ops['&'] = 7;
-	c_ops['|'] = 8;
-	c_ops['!'] = 9;
-	c_ops['+'] = 10;
-	c_ops['-'] = 11;
-	c_ops['*'] = 12;
-	c_ops['/'] = 13;
-	c_ops['%'] = 14;
-	c_ops['^'] = 15;
-	c_ops['~'] = 16;
-	c_ops['?'] = 17;
-	c_ops['\''] = 18;
-	c_ops['"'] = 19;
-	c_ops['['] = 20;
-	c_ops[']'] = 21;
-	c_ops['{'] = 22;
-	c_ops['}'] = 23;
-	c_ops[':'] = 24;
-	c_ops[';'] = 25;
-	c_ops[','] = 26;
-	c_ops['.'] = 27;
-	c_ops[' '] = 1;				// space chars are no-ops, but they act as delimiters
+	c_ops['('] = TOK_O_PAREN;
+	c_ops[')'] = TOK_C_PAREN;
+	c_ops['='] = TOK_ASSIGN;
+	c_ops['<'] = TOK_B_LT;
+	c_ops['>'] = TOK_B_LT;
+	c_ops['&'] = TOK_AND;
+	c_ops['|'] = TOK_OR;
+	c_ops['!'] = TOK_B_NOT;
+	c_ops['+'] = TOK_ADD;
+	c_ops['-'] = TOK_SUB;
+	c_ops['*'] = TOK_MULT;
+	c_ops['/'] = TOK_DIV;
+	c_ops['%'] = TOK_MOD;
+	c_ops['^'] = TOK_XOR;
+	c_ops['~'] = TOK_NOT;
+	c_ops['?'] = TOK_QMARK;
+	c_ops['\''] = TOK_SQUOTE;
+	c_ops['"'] = TOK_DQUOTE;
+	c_ops['['] = TOK_OSQUARE;
+	c_ops[']'] = TOK_CSQUARE;
+	c_ops['{'] = TOK_OCURLY;
+	c_ops['}'] = TOK_CCURLY;
+	c_ops[':'] = TOK_COLON;
+	c_ops[';'] = TOK_SEMIC;
+	c_ops[','] = TOK_COMMA;
+	c_ops['.'] = TOK_DOT;
+	c_ops[' '] = 1;				// space chars are no-ops, but they act as preprocessor delimiters
 
 	// non-newline whitespace lookup table -- for use in the preprocessor only
 	memset (whtsp_lkup, 0, 128);
@@ -927,17 +927,19 @@ int do_c_compile(char *fname)
 //	preprocess_to_text(in);
 //	return 0;
 
-	preprocess (in, fname);		// preprocessing: includes, defines, macros, #ifs, etc.
+	preprocess (in, fname);		// preprocessing: includes, macros, #ifs, etc.
 
 	tokenize();			// take the messy output from the preprocessor and tokenize it prettily
 
-	typespecs();		// parse struct/union/enum/typedef info
+	prototypes();		// parse funct/struct/union/enum/typedef info
 
 	declarations();		// parse variables
 
 	syntax_check();		// everything that's left should be logic? -- check syntax
 
 	if (total_errs != 0) return 1;
+
+	// XXX: another pass here to simplify expressions and do dead code elimination??
 
 	emit_to_target();	// convert to binary
 	
