@@ -1,25 +1,24 @@
 // PASS #2 -- tokenize
 
 // Tokenizing converts keywords, names, and operators into single bytes.
-// The basic point is that it is much easier and faster to process single bytes than it is to process "words"
-// -- even if the two are defined to have identical meanings. The switch statement is especially efficient
-// when processing streams of bytes. Some disambiguation is also done for characters that are used in multiple
-// contexts, such as the '-' character in --, -=, ->, - (unary) and - (binary).
-// Converting multiple bytes into single bytes also reduces the memory requirements, which helps in the effort
-// to keep the entire file packed in memory at all times for speed.
+// The basic point is that it is much easier and faster to process single bytes than it is to process text,
+// arrays, or structures.
+// The switch statement is especially efficient when processing streams of bytes. Some disambiguation is
+// also done for characters that are used in multiple contexts, such as the '-' character in --, -=, ->,
+// - (unary) and - (binary). Converting multiple bytes into single bytes also reduces the memory
+// requirements, which helps in the effort to keep the entire file packed in memory at all times for speed.
 
-// HIHI!! pass in an inf for error messages
+
 // put *unique* strings into the string table
 int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 {
 	int32_t i, j, k;
 	uint32_t *handle_tbl;
-// XXX: verify that max_names_per_hash * 1k + namestr_len + len + MAX_STRING_SIZE won't overflow inf->llp
-// -- if it would, do a major_copyup()
 //	if (max_names_per_hash * 1024 + namestr_len + len + MAX_STRBUF_SIZE > the int storage array??)
-//		i = 0;
-	// copy the name into the string table
-	alt_strncpy((char *) name_strings + namestr_len, (char *) name, len);
+//		do a major_copyup()
+
+	// tentatively copy the name into the string table
+	alt_strncpy(name_strings + namestr_len, name, len);
 
 	// find the insertion point in the token list -- verify whether it's a duplicate
 	handle_tbl = (uint32_t *) wrksp;
@@ -50,7 +49,7 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 		}
 	}
 
-	// build the name handle -- namestr_len is the *offset* to the definition
+	// build the new name handle -- namestr_len is the *offset* to the definition
 	// (this name handle convention must remain compatible with get_name_idx)
 	handle_tbl[i] = len | (namestr_len << 8);
 	k = namestr_len;
@@ -59,7 +58,8 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 }
 
 
-void tok_pass(struct pass_info *inf)
+//void tok_pass(struct pass_info *inf)
+void tok_pass()
 {
 	uint8_t *p, *c, *sp;
 	int8_t level, def_flg;
@@ -90,6 +90,7 @@ void tok_pass(struct pass_info *inf)
 				if (def_flg == 0 && level == 0) def_flg = -1;		// potentially start looking for a global "struct" definition
 				*(emit_ptr++) = *(p++);
 				// the current byte must be either the beginning of a name, or an open curly bracket?
+// HIHI!! oh crap -- there is also newline whitespace to deal with! Use a next_tok() function? But it may have to read more!
 				if (alnum_[*p] == 0)
 				{
 					*(emit_ptr++) = TOK_NONAME_IDX;
@@ -121,6 +122,7 @@ void tok_pass(struct pass_info *inf)
 		case '4':	case '5':
 		case '6':	case '7':
 		case '8':	case '9':
+	// HIHI!! what about an escaped \n in the middle of a number? And if that works, if there is an error, which line is it on?
 			i = num_parse(p, &p, &ll, &d, &cman_tbl[flt_cnt], &cexp_tbl[flt_cnt]);
 			if (i == 0)
 			{
@@ -179,7 +181,7 @@ void tok_pass(struct pass_info *inf)
 			j = 1;
 			while (alnum_[*++p] != 0) ++j;
 			i = hash(c, (int) j);
-			idx_tbl[idxidx++] = tok_build_name(c, (uint8_t i), j);		// the index array stores the string offset
+			idx_tbl[idxidx++] = tok_build_name(c, (uint8_t) i, j);		// the index array stores the string offset
 			*(emit_ptr++) = TOK_NAME_IDX;							// emit a "name token"
 			break;
 
@@ -223,60 +225,11 @@ def_term:
 			if (level == 0 && def_flg < 0) def_flg = 0;		// kill a potential struct def on anything other than an OCURLY
 			break;
 
-		case '\n':
-			i = 1;
-			while (*p == '\n' || *p == ' ')
-			{
-				if (*++p == '\n') ++i;			// count runs of newlines
-			}
-			inf->line_num += i;
-			while (i > 2)			// compress long runs of newlines (happens often)
-			{
-				// emit a token for compressed newlines
-				*(emit_ptr++) = TOK_RLL_NL;
-				j = i;
-				if (i > 258)
-				{
-					j = 258;
-					if (i < 260) j = 250;			// preferentially, do 2 run-length compressed emits
-				}
-				if (j == TOK_ENDOFBUF + 3) --j;		// an emitted value of 2 is special, and must not be output accidentally
-				i -= j;
-				*(emit_ptr++) = (uint8_t) (j - 3);
-			}
-			if (i > 0)
-			{
-				*(emit_ptr++) = TOK_NL;
-				if (--i > 0) *(emit_ptr++) = TOK_NL;
-			}
-			break;
-
-//		default:
-	// show_error? -- somehow a garbage char ended up in the input stream!
-//			i = 0;			// HIHI!!! should never trigger!
-
 		case TOK_ENDOFBUF:
 			// the only way to get here is to hit EOF -- so return;
 			*(emit_ptr++) = TOK_ENDOFBUF;
 			return;
 
-		case TOK_LINEFILE:
-			*(emit_ptr++) = TOK_LINEFILE;
-			// first 8 bytes is line number as a hex char string then a NUL terminated filename
-			c = name_strings + namestr_len;
-			i = 8;
-			j = 0;
-			while (--i >= 0)
-			{
-				*(c++) = *++p;
-				j += hex_lkup[*p] << (i * 4);
-			}
-			inf->line_num = j;
-			inf->fname = c;
-			j = alt_strcpy(c, ++p) + 1;				// include the NUL
-			idx_tbl[idxidx++] = namestr_len;
-			p += j;
-			namestr_len += j + 8;
 		}		// end of switch on *p
 
 		if ((uint32_t) (emit_ptr - wrksp) > wrk_rem - 30 * 1024)
@@ -287,13 +240,13 @@ def_term:
 		}
 
 		// guarantee there is always 16K minimum in the input buffer at all times
-		if (inf->infd >= 0 && (uint32_t) (p - wrksp) > wrk_rem - 16 * 1024) read_tok (&p, inf);
+		if (infd >= 0 && (uint32_t) (p - wrksp) > wrk_rem - 16 * 1024) read_tok (&p);
 	}		// infinite loop
 }
 
 
 // put all the tables of calculated info just below wrk_rem + the emit buffer
-void finalize_tok(struct pass_info *inf)
+void finalize_tok()
 {
 	uint32_t i, j, m, x, e;
 	uint8_t *p;
@@ -305,7 +258,9 @@ void finalize_tok(struct pass_info *inf)
 	i = int_cnt * 8;				// bytes in the int table
 	m = flt_cnt * 8;				// bytes in the mantissa table
 	x = (flt_cnt * 2 + 3) & ~3;		// bytes in the exponent table (rounded to 4b)
-	e = emit_ptr - (wrksp + wrk_used_base);			// total size of tokenizer output
+	e = emit_ptr - (wrksp + wrk_used_base);			// total size of tokenizer output remaining in memory
+	num_toks = e;
+// HIHI!! if (num_toks == 0) then get the total size of the output file
 
 	// calculate the final destination pointer for the index buffer first
 	p = wrksp + wrk_rem - (j + i + m + x + idxidx * 4);
@@ -339,17 +294,16 @@ void finalize_tok(struct pass_info *inf)
 void tokenize()
 {
 	int32_t j, wrk_avail;
-	struct pass_info inf;
 
 	// the input data is either in a file, or stored between wrksp_top and wrk_rem
-	inf.infd = -1;
+	infd = -1;
 	if (outf_exists != 0)
 	{
 		// open the file and read 30K in binary mode
 		wrksp_top = wrksp + wrk_rem - 30 * 1024 - 4;
-		inf.infd = qcc_open_r("hi1", 1);
-//		inf_infd = qcc_open_r(inout_fnames[??], 1);
-		j = qcc_read(inf.infd, (char *) wrksp_top, 30 * 1024);
+		infd = qcc_open_r("hi1", 1);
+//		infd = qcc_open_r(inout_fnames[??], 1);
+		j = qcc_read(infd, (char *) wrksp_top, 30 * 1024);
 		wrksp_top[j] = TOK_ENDOFBUF;
 		// since there was enough data to overflow into a file, leave half the workspace open for it
 		wrk_avail = (wrk_rem - 30 * 1024) / 2;
@@ -396,7 +350,7 @@ void tokenize()
 	noname_cnt = 0;
 	int_cnt = 0;
 	flt_cnt = 0;
-	tok_pass(&inf);
+	tok_pass();
 
 	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
 	{
@@ -406,5 +360,5 @@ void tokenize()
 		outf_exists = 1;	// set a flag for the next pass, to let it know there is an input file
 // HIHI!! flip the iof_in_toggle?
 	}
-	finalize_tok(&inf);
+	finalize_tok();
 }

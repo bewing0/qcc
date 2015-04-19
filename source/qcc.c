@@ -37,10 +37,7 @@
 
 
 // TODOS:
-// doublesharp()
-// handle floating point math in constant expressions
 // make the ternary test in eval_const_expr active
-// malloc space for each ninfo's fname in cpp -- don't use the emitted one forever
 
 // later:
 // sizeof() needs to be able to recognize a function pointer
@@ -222,6 +219,7 @@ void onetime_init()
 	// init wrksp_top and wrk_rem
 	wrk_rem = wrk_size;
 	wrksp_top = wrksp + wrk_size;
+	line_nums = NULL;
 
 	// init all the arrays associated with da_buffers -- space the pointers about equally through the workspace
 	// -- they are just about to get filled with info in parse_args()
@@ -419,7 +417,7 @@ uint8_t detect_c_keyword(uint8_t *s, uint32_t j)
 // once per-source-file init function for qcc
 void init_qcc_state(char *fname)
 {
-	cur_fname = fname;
+//	cur_fname = fname;
 	// besides the fact that I start out at "top level", what other state info needs setting?
 	// copy down the generic tokens to the bottom of wrksp for appending
 //	num_toks = cur_tokid = 0;
@@ -927,19 +925,24 @@ int do_c_compile(char *fname)
 //	preprocess_to_text(in);
 //	return 0;
 
-	preprocess (in, fname);		// preprocessing: includes, macros, #ifs, etc.
+	preprocess (in, (uint8_t *) fname);		// preprocessing: includes, macros, #ifs, etc.
 
 	tokenize();			// take the messy output from the preprocessor and tokenize it prettily
 
-	prototypes();		// parse funct/struct/union/enum/typedef info
+	prototypes();		// parse funct/struct/union/enum/typedef info at global scope
 
-	declarations();		// parse variables
+	declarations();		// parse variables at global scope
 
-	syntax_check();		// everything that's left should be logic? -- check syntax
+	syntax_check();		// hopefully a complete and final check on syntax, one function at a time?
 
 	if (total_errs != 0) return 1;
 
-	// XXX: another pass here to simplify expressions and do dead code elimination??
+//	expression_simplification();	-- do dead code elimination
+
+//	tcg_frontend_conversion();		-- convert tokens into a superset of TCG frontend code
+// Note: tcg can only handle function returns in a single register,
+// but the C99 spec requires (??) functions to be able to return complete structs, long doubles, 64bit values, etc.
+// so this frontend conversion cannot be to pure tcg, I don't think -- unless there is a clever workaround for the return value thing.
 
 	emit_to_target();	// convert to binary
 	

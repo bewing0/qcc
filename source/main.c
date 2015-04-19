@@ -58,11 +58,12 @@ int tcc_set_warning(char *warning_name, int value)
 
 // how_far indicates the amount of data to show from *r
 // 0 = show one byte, 1 = show one "word", -1 = show two "words"
-void show_error(int level, char *str1, char *r, int how_far, struct pass_info *inf)
+void show_error(int level, char *str1, char *r, int how_far)			// , struct pass_info *inf)
 {
 	char *p;
 	int len;
-// HIHI!! dump filename and line number -- if inf is NULL, say "command line"
+// HIHI!! get current offset from bof, scan forward through line_nums to find that offset (and the last fname before that) -- so I need a current pointer
+// HIHI!! dump filename (cur_fname) and line number  -- if line_nums is NULL, say "command line"
 	if (level == 0)
 	{
 		write (2, "Error: ", 7);
@@ -71,7 +72,7 @@ void show_error(int level, char *str1, char *r, int how_far, struct pass_info *i
 	else if (level > 0)
 	{
 		write (2, "Warning: ", 9);
-		if (inf != NULL) ++total_warns;
+		if (line_nums != NULL) ++total_warns;
 	}
 // else write (??, "info: ", 6); ?? -- If I send it to a non-2 fd, I have to do it *everywhere*
 	write (2, str1, strlen(str1));
@@ -320,7 +321,7 @@ int parse_args(int argc, char **argv)
 				p1 = popt->name;
 				if (p1 == NULL)
 				{
-					show_error(0, "Invalid option -- ", r, 1, NULL);
+					show_error(0, "Invalid option -- ", r, 1);
 					exit (1);
 				}
 				r1 = r + 1;						// r points to the '-' just before the option name
@@ -332,7 +333,7 @@ int parse_args(int argc, char **argv)
 				{
 					if (optind >= argc || (popt->flags & TCC_OPTION_NOSEP) != 0)
 					{
-						show_error(0, "Missing argument to ", r, 1, NULL);
+						show_error(0, "Missing argument to ", r, 1);
 						exit (1);
 					}
 					// if the arg does not immediately follow the option, then it must always be the next argv
@@ -455,7 +456,7 @@ int parse_args(int argc, char **argv)
    default:
     if (tccg_warn_unsupported) {
 unsupported_option:
-     show_error (1, "unsupported option '%s'", r, 1, NULL);
+     show_error (1, "unsupported option '%s'", r, 1);
     }
    }		// end of switch on options
 		}

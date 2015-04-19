@@ -16,9 +16,11 @@ struct proto_info
 	int infd;
 	uint32_t idx_strt;
 	uint32_t wb_flag;
+	uint32_t cur_didx;
 	uint8_t *wrkbuf;
 	uint8_t *cur_ptr;
 	uint8_t *defs;
+	uint8_t *curdef;
 	uint32_t *defs_idx;
 };
 
@@ -27,58 +29,52 @@ struct proto_info
 // 2 possible formats -- standard: typedef knowntype *** NEWTYPE;
 // function pointer: typedef return_type (calling_conventions NEWTYPE)(prototype_arglist);
 // XXX: **one possible issue!!** -- in the function pointer format, if the return type is char **, exactly where do the stars go, according to the standard?
-// HIHI parse out both kinds of typedefs separately, with different tokens?
-uint8_t * parse_typedef(uint8_t *p, struct pass_info *inf)
+// HIHI parse out both kinds of typedefs separately, with different tokens at the front?
+void parse_typedef(uint32_t totlen, struct proto_info *inf)
 {
-	uint8_t *sp, *name_ptr, *beg, *end, hsh_val;
-	int32_t namelen, i;
+	uint8_t *p, *name_ptr, *beg, *end, hsh_val, *sp;
+	int32_t i, level, namelen;
 
-	beg = p++;
-	*beg = 0;			// place a stopper for scanning backwards
-	// first, find the "newtype" name and its length within the two possible formats
-	// -- must find the semicolon at EOL, but there can be more semicolons inside curly brackets
-	i = 0;			// 'i' is the "recursion depth" level
-	while (*p != 0 && (*p != ';' || i != 0))
+	beg = inf->wrkbuf;
+	end = beg + totlen;
+	*end = TOK_ILLEGAL;
+	// scan forward and parse any struct/union/enum defs found
+	p = beg;
+	i = inf->idx_strt;
+	while (*p != TOK_ILLEGAL)
 	{
-		if (*p == '{') ++i;
-		// HIHI!!! I also need to count \n's!
-		else if (*p == '}')
+		if (*p == TOK_STRUCT || *p == TOK_UNION || *p == TOK_ENUM)
 		{
-			if (--i < 0)
+			if (p[1] == TOK_NAME_IDX || p[1] == TOK_NONAME_IDX)
 			{
-				// got some impossible curly brackets -- cross fingers, scan to the next semicolon, and quit
-				while (*p != 0 && *p != ';') ++p;
-				end = p;
-				goto td_syntax_err;
 			}
 		}
 		++p;
 	}
-	end = p;
-// HIHI! different errors for whether this was the actual EOF, or just an EOB
-	if (*p == 0) goto td_syntax_err;
-	// if the previous non-whitespace character before the semicolon was a close paren, it's a function pointer typedef
-	--p;
-	while (*p == ' ' || *p == ESCNL_TOK) --p;
-	if (p == 0) goto td_syntax_err;
-	if (*p == ')')
+
+	// first, find the "newtype" name within the two possible formats -- scan backwards from end
+	// if the previous character before the end was a close paren, it's a function pointer typedef
+	p = end - 1;
+	while (*p == TOK_NL || *p == TOK_RLL_NL) --p;
+	level = 0;
+	if (*p == TOK_C_PAREN)
 	{
-		// scan backwards through curly bracket pairs to find the matching open paren (note: i = 0 at this point)
-		while (*p != 0 && (*p != '(' || i != 0))
+		// scan backwards through curly bracket pairs to find the matching open paren
+		while (*p != TOK_TYPEDEF && (*p != TOK_O_PAREN || level != 0))
 		{
-			if (*p == '{') ++i;
-			else if (*p == '}')
+			if (*p == TOK_OCURLY) ++level;
+			else if (*p == TOK_CCURLY)
 			{
-				if (--i < 0) goto td_syntax_err;
+				if (--level < 0) goto td_syntax_err;
 			}
 			--p;
 		}
 		// the previous non-whitespace character before the open paren *must* be another close paren
-		while (*p == ' ' || *p == ESCNL_TOK) --p;
+		while (*p == ' ') --p;
 		if (*p != ')') goto td_syntax_err;
 		// and the previous non-whitespace character before *that* must be "newtype"
 		--p;
-		while (*p == ' ' || *p == ESCNL_TOK) --p;
+		while (*p == ' ') --p;
 		i = 1;		// set a flag that this is a function pointer typedef
 	}
 	// otherwise, p *must* be pointing at the end of the alphanumeric "newtype" name
@@ -118,70 +114,35 @@ uint8_t * parse_typedef(uint8_t *p, struct pass_info *inf)
 	{
 td_syntax_err:
 		// HIHI!! I can have multiple error strings based on 'i'!
-		show_error(0, "typedef syntax error", NULL, 1, inf);
+		show_error(0, "typedef syntax error", NULL, 1);
 	}
-	return end;
 }
 
 
 int32_t parse_proto(uint8_t **p, struct pass_info *inf, int depth)
 {
-	int32_t i;
-	int8_t level;
-	uint8_t *c, endtok;		// *wrkbuf
-
-	if (inf->infd >= 0 && depth == 0)			// HIHI!! do this in proto_pass? Should the depth0 special code ALL be in proto_pass?
-	{
-		i = *nxt_pass_info;		// maybe add a few bytes?
-		// if (wrksp + wrk_rem - idxidx*4 - emit_ptr > i)  ???
-	// if it fits in the emit_ptr space, wrkbuf = emit_ptr;	else wrkbuf = (uint8_t *)malloc (i);
-	}
-
-	c = *p;
-	endtok = TOK_CCURLY;
-	if (*c == TOK_TYPEDEF)
-		endtok = TOK_SEMIC;
-// else scan forward to the open curly and start from there? -- need to keep track of the namstr offset! (Or even FIND it, for typespecs!)
-	i = 0;
-	level = 0;
-	// so scan the token stream (handling OCURLY, CCURLY, ENDOFBUF) until level == 0 and *c == endtok
-	while (level != 0 || *c != endtok)
-	{
-		if (*c == TOK_OCURLY) ++level;
-		else if (*c == TOK_CCURLY) --level;
-//		else if (*c == TOK_ENDOFBUF) read more -- can the read function handle this properly?
-// I think I also need to be processing line numbers! And keeping track of the last LINEFILE seen!
-// I also need to be keeping track of the idxidx value! And detecting struct, union, and enum tokens
-		// -- and num and name tokens to increment idxidx!
-		++c;
-		++i;
-	}
-
-	*p = c + 1;			// ?? -- because this whole thing is gonna be processed into defs no matter what?
-	// wait to emit the def until all recursive processing is finished!
-	// when emitting the def, skip all NOOP bytes!
-	// if (depth == 0 && wrkbuf != emit_ptr) free(wrkbuf);
-	return i;
+	return 0;
 }
 
 
-// HIHI!! when I add the extra entries to the struct, obviously it won't be a pass_info anymore
 void wrkbuf_alloc(uint8_t *sp, struct proto_info *inf)
 {
-// there are 3 scenarios for a second workspace buffer in this pass
+// there are 3 scenarios for a workspace buffer in this pass -- because it can theoretically be very large
 // 1) the whole file is already in mem so I don't need one,
 // 2) there is enough space for it above the emit pointer,
-// 3) malloc it (the size is stored in *nxt_pass_info)
-	if (inf->wb_flag != 0) return;
+// 3) malloc it (the max size is stored in *nxt_pass_info)
+	if (inf->wb_flag != 0) return;						// check the flag for whether malloc has been called
 	if (inf->infd >= 0)
 	{
 		// calculate if (?? - emit_ptr > *nxt_pass_info)
-		//-- if not, inf->cur_ptr = inf->wrkbuf = (uint8_t *) malloc(*nxt_pass_info); inf->wb_flag = 1;
+		//-- if not, inf->cur_ptr = (uint8_t *) malloc(*nxt_pass_info); inf->wb_flag = 1;
 		// else
 			 inf->cur_ptr = emit_ptr;	// case 2
 	}
 	else inf->cur_ptr = sp;				// case 1
+	inf->wrkbuf = inf->cur_ptr;		// HIHI!! I don't remember what cur_ptr is supposed to be for!??
 }
+
 
 
 // suck all the global function, struct, union, enum, and typedef prototypes out of the token stream
@@ -189,13 +150,9 @@ void wrkbuf_alloc(uint8_t *sp, struct proto_info *inf)
 uint32_t proto_pass(struct proto_info *inf)
 {
 	int32_t i;
-	uint32_t j, k, m, cur_lfile;
+	uint32_t j, k, m;
 	uint8_t bol_flag, *p, *c, *sp;
 	int8_t level, def_flg;
-
-
-	// so let's say I make an inf that contains wrkbuf, a flag for malloc, a stored 'k' value, & ???
-	// -- I want a new token on the front, with an index containing the offset to the name
 
 	bol_flag = def_flg = level = 0;
 	i = k = m = 0;
@@ -237,12 +194,13 @@ uint32_t proto_pass(struct proto_info *inf)
 			if (bol_flag != 0)
 			{
 				if (level == 0) def_flg = 2;
-				// else show_error (0, "typedef syntax error", NULL, 1, inf);		// must recalculate the line number and fname first!
+		// HIHI can you do typedefs with only local scope?
 			}
+			// else show_error (0, "typedef syntax error", NULL, 1, inf);		// must recalculate the line number and fname first!
 			break;
 
 		case TOK_SEMIC:
-			if (level == 0 && def_flg != 0) def_flg = 100;
+			if (level == 0 && def_flg != 0) def_flg = 32;
 			bol_flag = 1;
 			break;
 
@@ -255,39 +213,20 @@ uint32_t proto_pass(struct proto_info *inf)
 		case TOK_CCURLY:
 			if (--level == 0)
 			{
-				if (def_flg == 1) def_flg = 100;
+				if (def_flg == 1) def_flg = 16;
 			}
 			bol_flag = 1;
 			break;
 
-		case TOK_RLL_NL:
-			if (p[1] == TOK_ENDOFBUF) goto read_more;
-			j = *++p;
-			inf->line_num += j + 3;
-			break;
-
-		case TOK_NL:
-			inf->line_num++;
-			break;
-
 		case TOK_ENDOFBUF:
-read_more:
 			if (inf->infd < 0) return m;
 		// HIHI!! if (def_flg != 0) then I must do a partial copy to the wrkbuf! (and reset sp = p;)
-			read_tok (&p, inf);
+			read_tok (&p);
 			break;
 
 		default:
 			if (def_flg < 0) def_flg = 0;
 			bol_flag = 0;
-			break;
-
-		case TOK_LINEFILE:
-			// permanently save the offset to the string info from the idx table into cur_lfile
-			// (but don't lookup the filename or line number until an error happens)
-			cur_lfile = idx_tbl[k++];
-			bol_flag = 1;
-			inf->line_num = 0;		// line_num is now an OFFSET from cur_lfile
 
 		}		// end of switch on *p
 
@@ -297,6 +236,8 @@ read_more:
 			j = p - sp;
 			wrkbuf_alloc(sp, inf);
 			if (inf->cur_ptr != sp) memmove (inf->cur_ptr, sp, j);
+//			if (def_flg == 32) parse_typedef(j, inf);
+//			else if (def_flg == 16) parse_struct(j, inf->cur_ptr, inf->idx_strt, inf);
 	// HIHI!!! then send it into a parsing routine, to break the whole thing into pieces and store it in defs
 	// -- but I think I want separate parsing routines for typedefs, functions, and structs
 //					parse_proto(&p, inf, 0);
@@ -314,8 +255,9 @@ void post_proto()
 	int32_t i;
 	i = 0;
 	// is there any post processing needed on defs?
-	// copydown idx_tbl
-	// copyup defs, defs_idx, idx_tbl, and the emitted stream
+	// copydown idx_tbl and the emitted stream
+	// copyup defs, defs_idx
+	// then idx_tbl, and the emitted stream
 }
 
 
@@ -347,24 +289,33 @@ void prototypes()
 	inf.defs_idx = (uint32_t *) wrksp;
 	inf.defs = wrksp + idxidx * 4;
 	j = proto_pass(&inf);
-// HIHI!! copyup the defs buf -- but that (and its size) should probably be another global??
-	// j is the new value for idxidx -- copyup wrksp, j * 4
+
+	if (inf.wb_flag != 0) free (inf.wrkbuf);
+	idxidx = j;
+	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
+	{
+		handle_emit_overflow();			// dump the tail end
+		close (outfd);
+		outfd = -1;
+		outf_exists = 1;	// set a flag for the next pass, to let it know there is an input file
+// HIHI!! flip the iof_in_toggle?
+	}
+
 	post_proto();
 }
 
 
-// final scan of tokenized code for syntax
-void syntax_check()
-{
-	// apply all the grammar rules with a state machine
-	// finalize all ambiguous operators (eg: * for mult or deref)
-	// simplify expressions as much as possible
-}
 
-
+// global declarations belong in .bss, .data, or .rodata -- not in the .text section
+// -- deal with them, so that everything remaining belongs in .text
 void declarations()
 {
 }
 
+void syntax_check()
+{
+	// apply all the grammar rules with a state machine
+	// finalize all ambiguous operators (eg: * for mult or deref)
+}
 
 

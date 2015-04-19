@@ -45,18 +45,18 @@ int do_bench = 0;
 // contains type (2 bits), len (6 bits), and str offset (24 bits) (len is at the bottom)
 //uint32_t *token_info;
 
-//uint32_t hash_to_tokid[256], num_toks, cur_tokid;
+//uint32_t hash_to_tokid[256], cur_tokid;
 
 uint8_t *wrksp, *wrksp_top, *name_strings, host_bigendian, *emit_ptr;
 uint8_t stoppers[128], prep_src[128], prep_ops[256], alnum_[256], c_ops[256], whtsp_lkup[128];
 int8_t hex_lkup[256], hexout[16];
-uint32_t wrk_size, wrk_rem, wrk_used_base, namestr_len, nxt_pass_info[4];
+uint32_t wrk_size, wrk_rem, wrk_used_base, namestr_len, nxt_pass_info[4], *line_nums;
 uint16_t total_errs, total_warns, max_names_per_hash;
 
 
-int32_t da_entry_count[7], da_tot_entrylen[7];
+int32_t da_entry_count[7], da_tot_entrylen[7], lnum_cnt, num_toks;
 uint8_t *da_buffers[7];
-char *outfile, *cur_fname;
+char *outfile;			// , *cur_fname;
 
 uint64_t *cint_tbl;			// array for storage of all constant integer values
 uint64_t *cman_tbl;			// storage for all constant floating mantissas
@@ -70,7 +70,7 @@ uint32_t flt_cnt;			// entries in cman/cexp tables
 char inout_fnames[2][64];			// filenames for 2 temporary files
 int8_t iof_in_toggle;				// index of the inout_fname that is INPUT
 int8_t outf_exists;
-int outfd;
+int infd, outfd;
 
 // Benchmark info
 int32_t total_lines;
@@ -97,17 +97,11 @@ const uint64_t size_mask[3] =
 
 uint8_t m1cstr[4] = "-1";		// string for default defines
 
-struct pass_info
-{
-	uint8_t *fname;
-	uint32_t line_num;
-	int infd;
-};
-
 
 
 // the preprocessor needs a limit on string constants, macros, and macro inputs
 // -- and it must be less than half the chunk size (30k) of read_compressed
+// -- and less than 64K, no matter what
 #define MAX_MACRO_STRING	10240
 
 // buffer types

@@ -16,6 +16,9 @@
 #include <math.h>
 #include <float.h>
 
+// make warnings about read/write go away -- HIHI!!
+void write (int, char *, int);
+int read (int, uint8_t *, int);
 
 // strcpy that returns the length of the string
 int alt_strcpy(uint8_t *to, uint8_t *from)
@@ -33,7 +36,7 @@ int alt_strcpy(uint8_t *to, uint8_t *from)
 
 
 // strncpy that adds a 0 to the end of the *to string
-void alt_strncpy(char *to, char *from, int n)
+void alt_strncpy(uint8_t *to, uint8_t *from, int n)
 {
 	while (--n >= 0) *(to++) = *(from++);
 	*to = 0;
@@ -81,7 +84,7 @@ void qcc_write(int fd, char *buf, int len)
 }
 
 
-void read_tok(uint8_t **p, struct pass_info *inf)
+void read_tok(uint8_t **p)
 {
 	int32_t i;
 	uint8_t *c, *s;
@@ -93,12 +96,12 @@ void read_tok(uint8_t **p, struct pass_info *inf)
 		*(s++) = *(c++);
 		++i;
 	}
-	i = read (inf->infd, s, 30 * 1024 - i);
+	i = read (infd, s, 30 * 1024 - i);
 	wrksp_top[i] = TOK_ENDOFBUF;
 	if (i == 0)
 	{
-		close (inf->infd);
-		inf->infd = -1;
+		close (infd);
+		infd = -1;
 	}
 	*p = wrksp_top;
 }
