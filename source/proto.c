@@ -283,8 +283,8 @@ void prototypes()
 		outfd = -1;
 	}
 	else wrk_avail = wrksp_top - wrksp;				// OK to overwrite the tokenizer output
-	emit_ptr = wrksp + wrk_avail;
-	wrk_used_base = wrk_avail;
+	emit_base = wrksp + wrk_avail;
+	emit_ptr = emit_base;
 
 	inf.defs_idx = (uint32_t *) wrksp;
 	inf.defs = wrksp + idxidx * 4;

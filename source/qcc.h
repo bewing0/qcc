@@ -47,14 +47,14 @@ int do_bench = 0;
 
 //uint32_t hash_to_tokid[256], cur_tokid;
 
-uint8_t *wrksp, *wrksp_top, *name_strings, host_bigendian, *emit_ptr;
+uint8_t *wrksp, *wrksp_top, *name_strings, host_bigendian, *emit_base, *emit_ptr;
 uint8_t stoppers[128], prep_src[128], prep_ops[256], alnum_[256], c_ops[256], whtsp_lkup[128];
 int8_t hex_lkup[256], hexout[16];
-uint32_t wrk_size, wrk_rem, wrk_used_base, namestr_len, nxt_pass_info[4], *line_nums;
+uint32_t wrk_size, wrk_rem, namestr_len, nxt_pass_info[4], *line_nums, *olnums;
 uint16_t total_errs, total_warns, max_names_per_hash;
 
 
-int32_t da_entry_count[7], da_tot_entrylen[7], lnum_cnt, num_toks;
+int32_t da_entry_count[7], da_tot_entrylen[7], lnum_cnt, ol_cnt, num_toks;
 uint8_t *da_buffers[7];
 char *outfile;			// , *cur_fname;
 
@@ -75,7 +75,11 @@ int infd, outfd;
 // Benchmark info
 int32_t total_lines;
 int32_t total_bytes;
-int32_t tok_ident;				// HIHI!! is this a total token count? (including operators & keywords, I think?) -- I already have num_toks.
+// int32_t tok_ident;				// HIHI!! is this a total token count? (including operators & keywords, I think?) -- I already have num_toks.
+
+// small arrays for implementing the buffer copyup function (major_copyup)
+void *base_ptrs[8], *cur_usage[8];
+uint8_t tshft[8];
 
 
 // Note on Boolean implementation:

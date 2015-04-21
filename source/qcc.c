@@ -37,6 +37,7 @@
 
 
 // TODOS:
+// create the major_copyup() function
 // make the ternary test in eval_const_expr active
 
 // later:
@@ -415,7 +416,7 @@ uint8_t detect_c_keyword(uint8_t *s, uint32_t j)
 
 
 // once per-source-file init function for qcc
-void init_qcc_state(char *fname)
+void init_qcc_state(uint8_t *fname)
 {
 //	cur_fname = fname;
 	// besides the fact that I start out at "top level", what other state info needs setting?
@@ -892,7 +893,7 @@ int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, double *ldp,
 void handle_emit_overflow()		// struct pass_info *inf
 {
 	int i;
-	char *b = (char *) wrksp + wrk_used_base;
+	char *b = (char *) emit_base;
 	i = (char *) emit_ptr - b;
 	if (outfd < 0)
 	{
@@ -906,14 +907,14 @@ void handle_emit_overflow()		// struct pass_info *inf
 
 
 // compile a single C source file
-int do_c_compile(char *fname)
+int do_c_compile(uint8_t *fname)
 {
 	int in;
 	// init the compiler state machine
 	init_qcc_state(fname);
 
 	// open the source file (as text, for reading)
-	in = qcc_open_r (fname, 0);
+	in = qcc_open_r ((char *) fname, 0);
 	if (in < 0) return QCC_ERR_FNOTFOUND;
 
 	// get a source file version number and timestamp, to include as extra info in the object file
@@ -925,7 +926,7 @@ int do_c_compile(char *fname)
 //	preprocess_to_text(in);
 //	return 0;
 
-	preprocess (in, (uint8_t *) fname);		// preprocessing: includes, macros, #ifs, etc.
+	preprocess (in, fname);		// preprocessing: includes, macros, #ifs, etc.
 
 	tokenize();			// take the messy output from the preprocessor and tokenize it prettily
 
@@ -957,7 +958,7 @@ int do_c_compile(char *fname)
 int compile()
 {
 	int i, j, err_lvl;
-	char *p, *c;
+	uint8_t *p, *c;
 
 	err_lvl = 0;
 	i = 0;				// argument file number

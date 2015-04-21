@@ -1,14 +1,13 @@
 // PASS #1 -- preprocess (with a little bit of extra functionality)
 
 // TODO info for this file:
-// need a separate "string" buffer to output LINEFILE info to
-// divide the wrksp in two, for a olinnums array and the emit buf
-// post_cpp() copyup olinnums to be the new lin_nums for the next pass
-// modify double_hash_size function so that it can move/realloc a generic arrangement of buffers
+// copy in the global predefines
+// post_cpp() copyup olinnums to be the new line_nums for the next pass, amd lfile_strs is the new name_strings
 // the doublesharp() function is completely stubbed
 // eval_const_expr() can be simplified with new logic
 // handle floating point math in constant expressions
 // many small stubs to check and fill out
+// Isn't there some deal about putting names inside parens to prevent macro substitutions??
 
 
 struct pp_recursion_info {
@@ -16,6 +15,8 @@ struct pp_recursion_info {
 	int fd;						// source file descriptor
 	int depth;					// recursion depth for nested included files
 	int state;					// state machine info used only in read_compressed
+	uint32_t line_num_base;		// number of lines before the beginning of line_nums[]
+	uint32_t cur_lnum_idx;		// last line_nums index "looked up" -- so searches don't need to begin at 0
 	uint32_t buf_offset;		// distance from BOF to buf_top
 	uint8_t *buf_top;			// a pointer to the terminating NUL + 1 in the input buffer
 	uint8_t *unget;				// storage for "ungetted" bytes in read_compressed
@@ -122,6 +123,7 @@ void date_time (int timeflg)
 
 // read a file, compress out comments and whitespace
 // cpydwn and cdsize is a partial line of unprocessed data to stick on the front of the newly read data
+// the top of the final data destination is wrksp_top
 void read_compressed(struct pp_recursion_info *inf, uint8_t *cpydwn, int32_t cdsize)
 {
 	uint8_t *p, *c, *sp, *cmp;
@@ -140,7 +142,7 @@ void read_compressed(struct pp_recursion_info *inf, uint8_t *cpydwn, int32_t cds
 	while (--i >= 0) *(p++) = *(c++);
 
 read_more:
-	j = (30 * 1024) - cdsize;				// read the file in 30K gulps, starting at location p
+	j = (15 * 1024 - lnum_cnt) * 2 - cdsize;				// read the file in 30K gulps, starting at location p
 	// standard read loop -- i is always initted to -1
 	while (i != 0)
 	{
@@ -419,8 +421,8 @@ read_more:
 			inf->state = i;
 			i = sp - emit_ptr;
 			sp = emit_ptr;
-			// is enough room left in the OUTPUT buffer to do another read?
-			if (c - cmp < MAX_STRBUF_SIZE)
+			// is enough room left in the OUTPUT buffer to do another read (and in line_nums)?
+			if (c - cmp < MAX_STRBUF_SIZE && lnum_cnt < 7000)
 			{
 				p = c + 64;
 				while (--i >= 0) *(p++) = *(sp++);		// copy i chars from the unget buffer into p
@@ -431,22 +433,22 @@ read_more:
 		}
 	}
 
-	// there can be a large number of trailing blank lines on a file
-	// (because of comments that were removed) -- compress them out
-	if (inf->fd < 0)		// eliminate all trailing blank lines on the file
+	j = sp - emit_ptr;
+	sp = emit_ptr;
+	if (inf->fd < 0)		// theoretically, there could be chars in the unget buffer -- it should never happen in reality
 	{
-		// theoretically, there could be chars in the unget buffer -- it should never happen in reality
-		j = sp - emit_ptr;
-		sp = emit_ptr;
-		while (--j >= 0) *(c++) = *(sp++);		// copy j chars from the unget buffer into c
+		// note: it's possible to do a trick to combine this while() with the last one in the else case -- but leave the code simple?
+		while (--j >= 0) *(c++) = *(sp++);		// copy j chars from the unget buffer into c (output)
 	}
 	else
 	{
-		// if there is any unget info in the string buffer, save it for the next call to read_compressed
-		p = wrksp_top - i;
+		// if there is any "unget" info, save it for the next call to read_compressed
+		p = wrksp_top - j;
 		inf->unget = wrksp_top = p;
+		// note: a small amount of memory (the unget size) will get temporarily leaked,
+		// but will be retrieved when the current recursion completes.
 		inf->state |= i << 4;
-		while (--i >= 0) *(p++) = *(sp++);
+		while (--j >= 0) *(p++) = *(sp++);
 	}
 	*c = 0;
 	total_lines += lines_processed;
@@ -459,6 +461,7 @@ read_more:
 	wrksp_top -= j;
 	memmove (wrksp_top, p, j);
 	line_nums[lnum_cnt + 1] = 0xffffff00;		// put a stopper on the end of the line_nums array
+	inf->cur_lnum_idx = 0;
 }
 
 
@@ -499,12 +502,21 @@ uint8_t *pp_bypass(uint8_t *p, uint16_t type, struct pp_recursion_info *inf)
 		{
 			if (inf->fd >= 0)
 			{
-				c = wrksp_top;		// HIHI!!! debugging! other calls set wrksp_top to inf->buf_top?? Is that the right thing to do now?
-				read_compressed(inf, p, (int32_t) (inf->buf_top - p));
+				// note: wrksp_top is the final load point for the new data
+				// (the second argument to read_compressed is the copydown pointer)
+				wrksp_top = inf->buf_top;
+				i = j = 0;
+				while (i <= lnum_cnt) j += (line_nums[i++] >> 1) & 0x7f;
+				inf->line_num_base += j;
+				lnum_cnt = -1;											// then reinit the line_nums
+				read_compressed(inf, p, (int32_t) (wrksp_top - p) - 1);
 				p = wrksp_top;
 			}
-			if (*p == 0) break;
-// HIHI!!!! recalculate c! (eol for p)
+			if (*p == 0) return p;
+			j = (p - inf->buf_top) + inf->buf_offset;		// recalculate the eol pointer
+			i = 0;
+			while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
+			c = inf->buf_top + (line_nums[i] >> 8) - inf->buf_offset;
 		}
 		if (*p == '#')
 		{
@@ -593,7 +605,7 @@ int32_t eval_fn_macro(uint8_t *rawdef, uint8_t *stor, struct pp_recursion_info *
 	// count the number of arguments up to the close paren and get their names
 	while (*p != ')' && *p != 0)
 	{
-// if (*p == ',') return an error? a negative value? or just do a show_error and only copy a NUL byte? HIHI!!
+// if (*p == ',') return an "empty argument" error? a negative value? or just do a show_error and only copy a NUL byte? HIHI!!
 		off[i++] = p - rawdef;				// off[] is a 256 entry reusable short array
 		while (alnum_[*p] != 0) ++p;		// argument names *must* be alphanumeric
 		while (*p == ' ') ++p;
@@ -707,15 +719,16 @@ void double_handle_table_size()
 	uint32_t j, k;
 	uint8_t *p;
 	k = max_names_per_hash * 256 * 4 * 2;				// new size of the handle table = offset to string table
-
-	if (k + namestr_len > wrk_used_base)			// would the moved string table overwrite the emit buffer?
+	name_strings = wrksp + k;
+// HIHI!!! the emit buffer is no longer the next buffer above name_strings!!!
+	if (name_strings + namestr_len > emit_base)			// would the moved string table overwrite the emit buffer?
 	{
-		// pick a new value for wrk_used_base -- round up to 256K above what's needed
+		// pick a new value for emit_base -- round up to 256K above what's needed
 		j = (k + namestr_len + 0x3ffff) & ~0x3ffff;
 		p = wrksp + j;
-		i = emit_ptr - (wrksp + wrk_used_base);						// amount of data currently in buffer
+		i = emit_ptr - emit_base;						// amount of data currently in buffer
 		if (j + i < wrk_rem - 30 * 1024 * MAX_NESTED_INCLUDES)		// would the emit buffer overflow the workspace?
-			memmove(p, wrksp + wrk_used_base, i);			// no, everything still fits -- move up the emit buffer
+			memmove(p, emit_base, i);					// no, everything still fits -- move up the emit buffer
 
 //		else					// yes, it would overflow -- write all the emitted data to disk -- HIHI!!!! OYOY!!
 //		{
@@ -726,7 +739,7 @@ void double_handle_table_size()
 		//	i = 0;
 //		}
 		emit_ptr = p + i;
-		wrk_used_base = j;
+		emit_base = p;
 	}
 
 	// move up the string table
@@ -828,9 +841,8 @@ void pp_build_name(uint8_t *mname, uint8_t *p, uint8_t hash, int32_t len, struct
 	int32_t i, j, k;
 	uint32_t *handle_tbl;
 
-// HIHI!! verify that max_names_per_hash * 1k + namestr_len + len + MAX_STRING_SIZE won't overflow
-// -- if it would, either copy up or write out the emitted data!
-	if (max_names_per_hash * 1024 + namestr_len + len + MAX_STRBUF_SIZE > wrk_used_base)
+// HIHI!!! the emit buffer is no longer the one just above name_strings!! Use major_copyup()!
+	if (name_strings + namestr_len + len + MAX_STRBUF_SIZE > emit_base)
 		i = 0;
 	// copy the name into the string table
 	c = name_strings + namestr_len;
@@ -1113,10 +1125,6 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 	d[-1] = c_ops['('];
 	// get an aligned pointer just above c[1] (inside wrksp) for an array of 64b ints
 	llp = (uint64_t *)wrksp + (MAX_MACRO_STRING + c[1] - wrksp)/8;
-// HHI!!! actually, I think I need to start back at wrksp and add ALL of it?? Because this only starts on an 8b alignment, not a ldbl alignment.
-// HIHI!!! actually(2) -- I think I'm going to be building all the long doubles BY HAND if they are not supported, and then doing all the float
-// comparisons by hand, too! Ugh! But if they really have a 64bit mantissa, then that obviously fits nicely in a qword, and the rest in a short.
-// So I would keep TWO arrays, and 8b alignment would be just fine.
 	ldp = (double *)llp + (200 * 8) / sizeof(double);
 	// the first entries in both tables are required to be a constant 0
 	*llp = 0;
@@ -1181,7 +1189,7 @@ int32_t name_lookup(uint8_t *p, struct pp_recursion_info *inf)
 }
 
 
-void cpp_parse(struct pp_recursion_info *pinfo)
+void cpp_parse(struct pp_recursion_info *pinfo, uint8_t *lfile_strs, uint32_t *lstrs_len)
 {
 	uint32_t j, k;
 	int32_t i;
@@ -1263,16 +1271,16 @@ bypass_done:
 						sp = (uint8_t *) SYS_INCLUDE_PATHS;
 					}
 	
-					// each "depth" of included file has its own 15K entry line_nums array
-					line_nums = lnum_buf + (15 * 1024 * ninfo.depth);
+					// each "depth" of included file has its own 16K entry line_nums array
+					line_nums = lnum_buf + (16 * 1024 * ninfo.depth);
 					// the next line_nums points to the "line directive" string for the new file
-					line_nums[0] = (namestr_len << 8) | 1;
+					line_nums[0] = (*lstrs_len << 8) | 1;
 					// then always add a fake "escaped newline" at position 0
 					line_nums[1] = 3;
 					j = p - c;								// length of filename
-					alt_strncpy (name_strings + namestr_len, (uint8_t *) "00000000", 8);
-					namestr_len += 8;
-					ninfo.fname = name_strings + namestr_len;								// permanently save the filename pointer
+					alt_strncpy (lfile_strs + *lstrs_len, (uint8_t *) "00000000", 8);
+					*lstrs_len += 8;
+					ninfo.fname = lfile_strs + *lstrs_len;								// permanently save the filename pointer
 					// note: this filename may also be displayed in error messages, and it is used to open the file
 					ninfo.fd = i = -1;
 					while (ninfo.fd < 0 && i != 0)
@@ -1287,13 +1295,13 @@ bypass_done:
 					// failed after looking in ALL the supplied directories?
 					if (ninfo.fd < 0)
 					{
-						line_nums = lnum_buf + (15 * 1024 * pinfo->depth);
+						line_nums = lnum_buf + (16 * 1024 * pinfo->depth);
 						*p = 0;			// p is pointing at the closequote on the fname
 						show_error(0, "File not found, trying to include file ", (char *) c, 1);
 						*p = '"';
 						goto discard;
 					}
-					namestr_len += strlen ((char *) ninfo.fname) + 1;			// include the NUL on the filename
+					*lstrs_len += strlen ((char *) ninfo.fname) + 1;			// include the NUL on the filename
 	// make a pretty display on the screen with an informational message about each included file?
 	//					strncpy ((char *) ???, "          ", ninfo.depth);		// make a pretty indention to show nested includes
 		// HIHI if being verbose? -- write (1, emit_ptr, strlen(emit_ptr)); -- and then a \n?
@@ -1302,29 +1310,32 @@ bypass_done:
 					ninfo.buf_top = wrksp_top;
 					ninfo.state = 0;
 					ninfo.buf_offset = 0;
+					ninfo.cur_lnum_idx = 0;
+					ninfo.line_num_base = 0;
 					i = lnum_cnt;					// preserve the value of lnum_cnt through the recursion
 					lnum_cnt = 1;					// set up line numbering for the included file
 
 					read_compressed (&ninfo, NULL, 0);
-					cpp_parse(&ninfo);				// recurse
+					cpp_parse(&ninfo, lfile_strs, lstrs_len);				// recurse
 					lnum_cnt = i;					// recover lnum_cnt and *line_nums
-					line_nums = lnum_buf + (15 * 1024 * pinfo->depth);
+					line_nums = lnum_buf + (16 * 1024 * pinfo->depth);
 
 					// recalculate the current line number
 					j = (p - pinfo->buf_top) + pinfo->buf_offset;
-// HIHI!!! I need the starting point line number for k (= pinfo->base_line_num) -- it should get incremented on every entry into read_compressed
-					i = k = 0;
+					i = 0;
+					k = pinfo->line_num_base;
+					if (k != 0)					// HIHI!!! debugging!!!
+						c = p;
 					while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) k += (line_nums[i++] >> 1) & 0x7f;
 //					sp = pinfo->buf_top + (line_nums[i] >> 8) - pinfo->buf_offset - 1;	-- points at the \n, typically
 					// output a "line directive" pointing back to the parent file
 					line_nums[++lnum_cnt] = (namestr_len << 8) | 1;
 					// then always add a fake "escaped newline" at the current file position
 					line_nums[++lnum_cnt] = (j << 8) | 3;
-					c = name_strings + namestr_len;
+					c = lfile_strs + *lstrs_len;
 					i = 8;
 					while (--i >= 0) *(c++)= hexout[k >> (i * 4)];
-					namestr_len += 8;
-					namestr_len += alt_strcpy (c, pinfo->fname) + 1;
+					*lstrs_len += 8 + alt_strcpy (c, pinfo->fname) + 1;
 				}
 				else if (j == SIMHASH_DEFINE)
 				{
@@ -1455,9 +1466,10 @@ unrecognized:					// unrecognized preprocessor command
 discard:
 				// preprocessor commands discard to an unescaped EOL
 				j = (p - 1 - pinfo->buf_top) + pinfo->buf_offset;		// get line_num info for old line
-				i = 0;
+				i = pinfo->cur_lnum_idx;
 				while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
 				p = pinfo->buf_top + (line_nums[i] >> 8) - pinfo->buf_offset;
+				pinfo->cur_lnum_idx = i;
 
 			}		// end of doublesharp if-else
 			break;										// end of preprocessor commands section (#)
@@ -1645,82 +1657,33 @@ bad_3_:
 		}		// end of switch on *p
 
 		// verify that emit_ptr isn't close to overflowing (soft 64k limit)
-		if (p - emit_ptr < 0x10000) handle_emit_overflow();
+		if ((uint8_t *) olnums - emit_ptr < 0x10000) handle_emit_overflow();
 
 		// make sure there is always at least 16K in the input buffer, unless the file is closed
 		// -- that way, running into the EOB is always just an error
 		if (pinfo->fd >= 0 && pinfo->buf_top - p < 16 * 1024)
 		{
 			wrksp_top = pinfo->buf_top;
-			read_compressed(pinfo, p, (int32_t)(wrksp_top - p - 1));		// HIHI!! not this one -- and notice the -1! Don't include the 0 terminator!
+			// line_nums is about to get overwritten -- the only thing that must be saved from it is the current line number
+			j = (p - pinfo->buf_top) + pinfo->buf_offset;			// calculate the line number of the current p pointer
+			i = k = 0;
+			while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) k += (line_nums[i++] >> 1) & 0x7f;
+			pinfo->line_num_base += k;
+			lnum_cnt = -1;											// then reinit the line_nums
+			read_compressed(pinfo, p, (int32_t)(wrksp_top - p - 1));
 			p = wrksp_top;
 		}
 		// verify that at least one complete line is still loaded -- to prevent infinite loops
-		// HIHI!!!
+		// HIHI!!!  scan line_nums and see if line_nums[i] == 0xffffff00 -- the EOB marker (but is there a problem with the last line in a file?)
 //		if (*c == 0 && *p != 0) show_error(0, "line is too long to process", NULL, 1);
 	}
 }
 
-// a zero-terminated file is stored at wrksp_top,
-// and it needs preprocessing for: includes, defines, macros, #ifs, typedefs
-int preprocess(int fd, uint8_t *fname)
+
+void post_cpp()
 {
-	int32_t i;
-	struct pp_recursion_info inf;
-
-	// dynamic allocation for MAX_NESTED_INCLUDES arrays of raw line_nums
-	lnum_buf = (uint32_t *) malloc(30 * 1024 * 2 * MAX_NESTED_INCLUDES);
-	line_nums = lnum_buf;
-
-	// read one 30K gulp of the main source file -- compress out C comments and whitespace
-	inf.depth = 0;
-	inf.fname = fname;
-	inf.state = 0;
-	inf.fd = fd;
-	inf.buf_top = wrksp_top;
-	inf.buf_offset = 0;
-
-	// In the preprocessor, "names" consist of #defined macros.
-	// The preprocessor does all the necessary substitutions on all the names,
-	// througout the main source file and all included files. The final preprocessed
-	// output is (of course) passed on to the next compilation stage, and all the
-	// name info from the preprocessor is deleted to save memory.
-
-	// the name table is initially allocated containing 32 empty name handles per hash value
-	// -- if any hash value gets filled up, the size is doubled and memory gets rearranged
-	max_names_per_hash = 32;
-	i = max_names_per_hash * 4 * 256;
-
-	// init the name hashes in the list to "unused"
-	memset (wrksp, 0, i);
-
-	// the raw name strings begin just above the name hash list (growing up)
-	name_strings = wrksp + i;
-
-	// put the preprocessed output stream in the middle of the remaining workspace, growing up
-	i = ((wrk_rem / 2) + 3) & ~3;
-	// don't allocate more than 2M for the names, initially
-	if (i > 2 * 1024 * 1024) i = 2 * 1024 * 1024;
-	wrk_used_base = i;
-	emit_ptr = wrksp + i;
-	*line_nums = 1;											// must pre-emit the first "line" directive for the input file
-	alt_strncpy (name_strings, (uint8_t *) "00000000", 8);
-	namestr_len = 8 + alt_strcpy (name_strings + 8, (uint8_t *) fname) + 1;			// include the NUL on the filename
-	line_nums[1] = 3;										// "escaped" newline -- count of 1
-	lnum_cnt = 1;
-	read_compressed(&inf, NULL, 0);
-
-	// copy in the global predefines now, for processing -- as text, prepended to the source file	HIHI!!! redoing with direct entires!
-//	i = da_tot_entrylen[PREDEFINES];
-//	memmove (wrksp_top - i, da_buffers[PREDEFINES], i);
-	memset (nxt_pass_info, 0, 16);
-	outfd = -1;
-
-	// process the input source file to completion, and recursively descend into any included files
-	cpp_parse(&inf);
+	size_t i;
 	*(emit_ptr++) = TOK_ENDOFBUF;		// (must increment the pointer to calculate the correct total buffer length)
-	free (lnum_buf);
-
 	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
 	{
 		handle_emit_overflow();			// dump the tail end
@@ -1732,10 +1695,115 @@ int preprocess(int fd, uint8_t *fname)
 	else
 	{
 		// all the emitted data managed to fit into memory
-		i = emit_ptr - (wrksp + wrk_used_base);		// total size of preprocessor output
+		i = emit_ptr - emit_base;					// total size of preprocessor output
 		wrksp_top = wrksp + wrk_rem - i;			// copy it all up to end at wrksp + wrk_rem
-		memmove (wrksp_top, wrksp + wrk_used_base, i);
+		memmove (wrksp_top, emit_base, i);
 	}
+}
+
+
+// fd is an open sourcefile that needs preprocessing for: includes, defines, macros, and #ifs
+int preprocess(int fd, uint8_t *fname)
+{
+	int32_t i;
+	uint32_t lstrs_len;
+	uint8_t *lfile_strs;
+	struct pp_recursion_info inf;
+
+	// dynamic allocation for MAX_NESTED_INCLUDES arrays of raw line_nums (usually 640K)
+	lnum_buf = (uint32_t *) malloc(32 * 1024 * 2 * MAX_NESTED_INCLUDES);
+	line_nums = lnum_buf;
+
+	// prepare to read one 30K gulp of the main source file -- and compress out C comments and whitespace
+	inf.depth = 0;
+	inf.fname = fname;
+	inf.state = 0;
+	inf.fd = fd;
+	inf.buf_top = wrksp_top;
+	inf.buf_offset = 0;
+	inf.cur_lnum_idx = 0;
+	inf.line_num_base = 0;
+
+	// In the preprocessor, "names" consist of #defined macros.
+	// The preprocessor does all the necessary substitutions on all the names,
+	// througout the main source file and all included files. The final preprocessed
+	// output is (of course) passed on to the next compilation stage, and all the
+	// name info from the preprocessor is deleted to save memory.
+
+	// wrksp memory allocation in the preprocessor:
+	// at the top of memory down to wrk_rem is long-term storage (for the da_bufs)
+	// just below that is 300K of whitespace-compressed output from read_compressed (with a soft size limit)
+	// -- that 300K assumes a depth of 10 included files, and is never reached in reality
+	// -- the bottom of this data area is stored in wrksp_top, once it is filled
+	// at the bottom of memory is a 32K namehash table
+	// just above that is a variable sized space for storing macro names and definitions (with a 2M limit)
+	// just above that is a 10K space for storing filename and line number strings
+	// just above that is the emit storage buffer for the preprocessor -- the main output buffer
+	// halfway between the emit buffer base and wrksp_top is a storage area for line number information
+
+	// SO: create the pointers, and calculate the offsets for setting up all those workspace buffers
+	// the name table is initially allocated containing 32 empty name handles per hash value
+	// -- if any hash value gets filled up, the size is doubled and memory gets rearranged
+	max_names_per_hash = 32;
+	i = max_names_per_hash * 4 * 256;		// this is 32K, which seems to be a good size
+
+	// init the name hashes in the list to "unused"
+	memset (wrksp, 0, i);
+
+	// the macro name strings begin just above the name hash list (growing up)
+	name_strings = wrksp + i;
+	namestr_len = 0;
+
+	// calculate the position of the next buffer (above name_strings) -- the LINEFILE strings
+	i = ((wrk_rem / 4) + 3) & ~3;
+	// initially limit the name strings to a 2M max
+	if (i > 2 * 1024 * 1024) i = 2 * 1024 * 1024;
+	lfile_strs = wrksp + i;									// set the pointer
+	i += 10240;												// allocate 10K for the LINEFILE strings
+	emit_base = wrksp + i;									// and set the base for the emit buffer
+	emit_ptr = emit_base;
+	*line_nums = 1;											// must pre-emit the first LINEFILE for the input file
+	line_nums[1] = 3;										// "escaped" newline -- count of 1
+	lnum_cnt = 1;
+	// it is most convenient to read some of the main source file NOW, before setting  up the olnums buffer
+	read_compressed(&inf, NULL, 0);
+
+	ol_cnt = 0;			// setup the line_nums array for the **post processed** sourcecode
+	i += (((wrk_rem - i) / 2) + 3) & ~3;
+	olnums = (uint32_t *)(wrksp + i);
+
+	// then enter all these base pointers and lengths into the copyup control arrays
+	*base_ptrs = name_strings;
+	*cur_usage = &namestr_len;
+	*tshft = 0;
+	base_ptrs[1] = lfile_strs;
+	cur_usage[1] = &lstrs_len;
+	tshft[1] = 0;
+	base_ptrs[2] = emit_base;
+	cur_usage[2] = &emit_ptr;
+	tshft[2] = 0x80;				// flag that emit_ptr is a ptr, not a length
+	base_ptrs[3] = olnums;
+	cur_usage[3] = NULL;
+
+	// copy in the global predefines now, for processing -- as text, prepended to the source file	HIHI!!! redoing with direct entires!
+//	i = da_tot_entrylen[PREDEFINES];
+//	memmove (wrksp_top - i, da_buffers[PREDEFINES], i);
+	memset (nxt_pass_info, 0, 16);
+	outfd = -1;
+
+	alt_strncpy (lfile_strs, (uint8_t *) "00000000", 8);						// must pre-emit the first LINEFILE for the input file
+	lstrs_len = 8 + alt_strcpy (lfile_strs + 8, (uint8_t *) fname) + 1;			// include the NUL on the filename
+
+	// process the input source file to completion, and recursively descend into any included files
+	cpp_parse(&inf, lfile_strs, &lstrs_len);
+	free (lnum_buf);
+
+	post_cpp();
+	// two buffers get handed to the next pass -- the tokenizer will have to rearrange them in memory
+	line_nums = olnums;
+	lnum_cnt = ol_cnt;
+	name_strings = lfile_strs;
+	namestr_len = lstrs_len;
 
 	return 0;
 }

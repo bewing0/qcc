@@ -151,7 +151,7 @@ void tok_pass()
 			{
 				// store the string directly to name_strings	-- XXX: this codepath is untested!
 				idx_tbl[idxidx++] = namestr_len;
-				alt_strncpy ((char *) name_strings, (char *) c, i);
+				alt_strncpy (name_strings, c, i);
 				namestr_len += i + 1;
 			}
 			else
@@ -258,15 +258,15 @@ void finalize_tok()
 	i = int_cnt * 8;				// bytes in the int table
 	m = flt_cnt * 8;				// bytes in the mantissa table
 	x = (flt_cnt * 2 + 3) & ~3;		// bytes in the exponent table (rounded to 4b)
-	e = emit_ptr - (wrksp + wrk_used_base);			// total size of tokenizer output remaining in memory
+	e = emit_ptr - emit_base;			// total size of tokenizer output remaining in memory
 	num_toks = e;
-// HIHI!! if (num_toks == 0) then get the total size of the output file
+// HIHI!! if (num_toks == 0) then get the total size of the output file that must have been written
 
 	// calculate the final destination pointer for the index buffer first
 	p = wrksp + wrk_rem - (j + i + m + x + idxidx * 4);
 	// then calculate the new emit buffer address, and move the buffer
 	wrksp_top = p - e;
-	memmove (wrksp_top, wrksp + wrk_used_base, e);
+	memmove (wrksp_top, emit_base, e);
 	// then the other buffers
 	e = idxidx * 4;
 	memmove (p, idx_tbl, e);
@@ -311,8 +311,8 @@ void tokenize()
 		outfd = -1;
 	}
 	else wrk_avail = (wrksp_top - wrksp) - 0x10000;			// 64K below the cpp output
-	emit_ptr = wrksp + wrk_avail;
-	wrk_used_base = wrk_avail;
+	emit_base = wrksp + wrk_avail;
+	emit_ptr = emit_base;
 
 	// the tokenizing pass needs 6 temporary arrays: a namehash table, strings, 64b longs,
 	// floating mantissas, floating exponents, and an "index" array to keep track of everything
