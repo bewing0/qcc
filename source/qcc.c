@@ -37,8 +37,15 @@
 
 
 // TODOS:
-// create the major_copyup() function
+// finalize/test the major_copyup() function
+// mod show_error for filenames and line numbers from any source
 // make the ternary test in eval_const_expr active
+// the doublesharp() function is completely stubbed
+// eval_const_expr() can be simplified with better logic
+// handle floating point math in preprocessor constant expressions
+// is the handling of escaped newlines legal for numbers and names?
+// Isn't there some deal about putting names inside parens to prevent macro substitutions??
+// should recursive macro definitions be prevented or limited somehow?
 
 // later:
 // sizeof() needs to be able to recognize a function pointer
@@ -234,6 +241,54 @@ void onetime_init()
 	// the first entry in the "includes" da should be 0 length
 	da_tot_entrylen[INCLUDE_PATHS] = 1;
 	*da_buffers[INCLUDE_PATHS] = 0;
+}
+
+
+// HIHI!! this routine is only partially tested, and needs it badly
+void major_copyup(uint32_t added, int depth)
+{
+	uint8_t *p1, *p2;
+	uint32_t move, i;
+
+	// if "added" bytes are appended to the currently used amount of buffer[depth],
+	// will it overflow on top of buffer[depth + 1]?
+	i = added;
+	// the buffer at depth -1 *always* causes a move -- otherwise, check for overflow
+	if (depth >= 0)
+	{
+		p1 = *((uint8_t **) base_ptrs[depth]);
+		p2 = *((uint8_t **) base_ptrs[depth + 1]);
+		if ((tshft[depth] & 0x80) != 0)
+			p1 = *((uint8_t **) cur_usage[depth]);			// *cur_usage is a ptr
+		else
+			i += *((uint32_t *) cur_usage[depth])
+						<< (tshft[depth] & 7);				// *cur_usage is a length with a shift
+		if (p1 + i < p2) return;
+	}
+	move = (i + 8191) & ~8191;					// for now, make the movement delta a multiple of 8k
+	// cur_usage == NULL means "the end of the list" and "this buffer cannot move"
+	if (cur_usage[depth + 1] != NULL)			// do a recursion, to check whether the NEXT buffer has to move
+		major_copyup( move, depth + 1);
+
+// HIHI!! for special handlers, I actually want to check if the NEXT buffer would theoretically shift, and then return that fact?
+// because if I don't violate some minimum size for the buffer, then it's actually OK to copy up things like the emit buffer
+	// if ((tshft[depth & 0x70) != 0) -- then this buffer has a special handler
+
+	// at this point, there is always room for the copyup
+	p1 = *((uint8_t **) base_ptrs[depth]);
+	// calculate the buffer length
+	if ((tshft[depth] & 0x80) != 0)
+	{
+		p2 = *((uint8_t **) cur_usage[depth]);				// *cur_usage is a ptr
+		i = p2 - p1;
+	}
+	else i = *((uint32_t *) cur_usage[depth]) << (tshft[depth] & 7);
+	p2 = p1 + added;
+	memmove (p2, p1, i);
+
+	// then reset base_ptrs[depth] and perhaps cur_usage[depth] (if it was a pointer, too)
+	*((uint8_t **) base_ptrs[depth]) += added;
+	if ((tshft[depth] & 0x80) != 0) *((uint8_t **) cur_usage[depth]) += added;
 }
 
 

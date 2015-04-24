@@ -58,7 +58,6 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 }
 
 
-//void tok_pass(struct pass_info *inf)
 void tok_pass()
 {
 	uint8_t *p, *c, *sp;
@@ -245,6 +244,89 @@ def_term:
 }
 
 
+// remove the newline and LINEFILE info from the emitted stream
+void pre_tokenize()
+{
+	uint32_t i, j, k;
+	uint8_t *p, *c, *pb;
+	// the input data is either in a file, or stored between wrksp_top and wrk_rem
+	infd = -1;
+	if (outf_exists != 0)
+	{
+		// open the file and read 30K in binary mode
+		wrksp_top -= 30 * 1024 - 4;
+		infd = qcc_open_r("hi1", 1);
+//		infd = qcc_open_r(inout_fnames[??], 1);
+		j = qcc_read(infd, (char *) wrksp_top, 30 * 1024);
+		wrksp_top[j] = TOK_ILLEGAL;
+		outf_exists = 0;							// reset the flag for this next pass
+		outfd = -1;
+	}
+
+	// HIHI need to do a small calculation to figure out how much spare room there is for extra linbufs
+	lnum_cnt = 0;
+	i = nxt_pass_info[PP_LINE_CNT];
+	line_nums = (uint32_t *) wrksp;
+	p = pb = emit_base;
+	emit_base = (uint8_t *) (line_nums + i + 2048);
+	emit_ptr = emit_base;
+
+	i = 0;							// current offset in the name_strings buffer
+	while (1)
+	{
+		if (*p == LFILE_TOK)
+		{
+			c = name_strings + i;
+			while (*++c != 0);				// find the end of the current filename
+			line_nums[lnum_cnt++] = i << 8;
+			++p;
+			i = 1 + c - name_strings;		// get the index of the NEXT filename
+		}
+		else if (*p == '\n')
+		{
+			c = p;
+			while (*++p == '\n');
+			j = p - c;
+			while (j > 0)
+			{
+				k = j;
+				if (k > 255) k = 255;
+				j -= k;
+				line_nums[lnum_cnt++] = k | ((p - pb) << 8);
+			}
+		}
+		else if (*p == TOK_ILLEGAL)
+		{
+			if (infd >= 0)
+			{
+				j = qcc_read(infd, (char *) wrksp_top, 30 * 1024);
+				wrksp_top[j] = TOK_ILLEGAL;
+				p = wrksp_top;
+				if (j == 0)
+				{
+					qcc_close (infd);
+					infd = -1;
+				}
+			}
+			else break;
+		}
+		else
+			*(emit_ptr++) = *(p++);
+
+//		if (??) handle_emit_overflow();		HIHI!!
+	}
+	*(emit_ptr++) = TOK_ENDOFBUF;
+	// data was *removed* from the emit buffer, so it should be smaller now, and fit back in its former space
+	k = emit_ptr - emit_base;
+	p = emit_base;
+	emit_base = wrksp + wrk_rem - k;
+	memmove (emit_base, p, k);
+	// verify that all of linefile was used up -- HIHI
+	j = i - namestr_len;
+	wrksp_top = emit_base;
+}
+
+
 // put all the tables of calculated info just below wrk_rem + the emit buffer
 void finalize_tok()
 {
@@ -295,6 +377,7 @@ void tokenize()
 {
 	int32_t j, wrk_avail;
 
+	pre_tokenize();
 	// the input data is either in a file, or stored between wrksp_top and wrk_rem
 	infd = -1;
 	if (outf_exists != 0)
@@ -305,7 +388,7 @@ void tokenize()
 //		infd = qcc_open_r(inout_fnames[??], 1);
 		j = qcc_read(infd, (char *) wrksp_top, 30 * 1024);
 		wrksp_top[j] = TOK_ENDOFBUF;
-		// since there was enough data to overflow into a file, leave half the workspace open for it
+		// since there was enough data to overflow into a file, leave half the workspace open for tokens
 		wrk_avail = (wrk_rem - 30 * 1024) / 2;
 		outf_exists = 0;							// reset the flag for this next pass
 		outfd = -1;
@@ -314,10 +397,11 @@ void tokenize()
 	emit_base = wrksp + wrk_avail;
 	emit_ptr = emit_base;
 
-	// the tokenizing pass needs 6 temporary arrays: a namehash table, strings, 64b longs,
-	// floating mantissas, floating exponents, and an "index" array to keep track of everything
+	// the tokenizing pass needs 8 temporary arrays: the line_nums array, a namehash table, strings, 64b longs,
+	// floating mantissas, floating exponents, an "output lnums array", and an "index" array to keep track of everything
 	// -- the preprocessor passed on a few numbers to estimate max allocations
 
+	// HIHI!! the following calculation needs modding for the 2 new arrays -- line_nums is already in place at the bottom of wrksp
 	// total number of alphanumeric strings can be used to calculate the size of the hashed handle table
 	j = 2048;
 	while (j / 2 < (int32_t) nxt_pass_info[PP_STRING_CNT] && j < wrk_avail / 8) j *= 2;
@@ -345,6 +429,23 @@ void tokenize()
 	idx_tbl = (uint32_t *) (cexp_tbl + j);
 //	j = (nxt_pass_info[1] + nxt_pass_info[PP_NUM_CNT]) * 4;
 //	wrk_avail -= j;
+
+	// then enter all these base pointers and lengths into the copyup control arrays
+/*	*base_ptrs = name_strings;
+	*cur_usage = &namestr_len;
+	*tshft = 0;
+	base_ptrs[1] = lfile_strs;
+	cur_usage[1] = &lstrs_len;
+	tshft[1] = 0;
+	base_ptrs[2] = emit_base;
+	cur_usage[2] = &emit_ptr;
+	tshft[2] = 0x90;				// flag that emit_ptr is a ptr (not a length) and to use special overflow handler #1
+	base_ptrs[3] = olnums;
+	cur_usage[3] = &ol_cnt;
+	tshft[3] = 0x22;				// use special overflow handler #2
+	base_ptrs[4] = wrksp_top;
+	cur_usage[4] = NULL;		*/
+
 
 	idxidx = 0;
 	noname_cnt = 0;

@@ -58,7 +58,7 @@ int tcc_set_warning(char *warning_name, int value)
 
 // how_far indicates the amount of data to show from *r
 // 0 = show one byte, 1 = show one "word", -1 = show two "words"
-void show_error(int level, char *str1, char *r, int how_far)			// , struct pass_info *inf)
+void show_error(int level, char *str1, char *r, int how_far)			// HIHI!!!! modify this to accept a filename and line number
 {
 	char *p;
 	int len;
@@ -122,7 +122,7 @@ static char *tcc_basename(char *name)
 
 
 // set "i" to 1 to include the trailing NUL char -- 0 otherwise
-void dynarray_add(int type, char *r, int32_t i)
+void dynarray_add(int type, uint8_t *r, int32_t i)
 {
 	uint8_t *p;
 	// note: there is so much room to store data that it is not necessary to check for overflows
@@ -142,7 +142,7 @@ void pack_da_bufs()
 	uint8_t *p, *c, *s;
 	i = 7;
 	k = 0;
-	s = (char *) wrksp + wrk_size;
+	s = wrksp + wrk_size;
 
 	while (--i >= 0)
 	{
@@ -162,8 +162,8 @@ void pack_da_bufs()
 // build a set of #define statements as text, to prepend to all source files
 void qcc_predefine_macro(char *mname, char *val)
 {
-	char tmp[128], *p;
-	alt_strcpy (tmp, "#define ");
+	uint8_t tmp[128], *p;
+	alt_strcpy (tmp, (uint8_t *) "#define ");
 	p = tmp + 8;
 	while (*mname != 0) *(p++) = *(mname++);
 	*(p++) = ' ';
@@ -180,7 +180,7 @@ void qcc_predefine_macro(char *mname, char *val)
 	dynarray_add(PREDEFINES, tmp, 0);
 }
 
-void qcc_preundef_symbol(char *symname)
+void qcc_preundef_symbol(uint8_t *symname)
 {
 	dynarray_add(PRE_UNDEFS, symname, 1);
 }
@@ -297,13 +297,13 @@ static TCCOption tcc_options[] = {
 int parse_args(int argc, char **argv)
 {
 	TCCOption *popt;
-	char *p1, *r1, *r;
+	uint8_t *p1, *r1, *r;
 	int optind;
 
 	optind = 0;
 	while (optind < argc)
 	{
-		r = argv[optind++];
+		r = (uint8_t *) argv[optind++];
 		if (r[0] != '-' || !r[1]) {
 			/* add a new file */
 			dynarray_add(SOURCE_FNAMES, r, 1);

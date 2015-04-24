@@ -1,42 +1,30 @@
 // PASS #1 -- preprocess (with a little bit of extra functionality)
 
-// TODO info for this file:
-// copy in the global predefines
-// post_cpp() copyup olinnums to be the new line_nums for the next pass, amd lfile_strs is the new name_strings
-// the doublesharp() function is completely stubbed
-// eval_const_expr() can be simplified with new logic
-// handle floating point math in constant expressions
-// many small stubs to check and fill out
-// Isn't there some deal about putting names inside parens to prevent macro substitutions??
-
-
 struct pp_recursion_info {
-	uint8_t *fname;				// the current source file being parsed (can be modified by #line)
 	int fd;						// source file descriptor
 	int depth;					// recursion depth for nested included files
 	int state;					// state machine info used only in read_compressed
-	uint32_t line_num_base;		// number of lines before the beginning of line_nums[]
-	uint32_t cur_lnum_idx;		// last line_nums index "looked up" -- so searches don't need to begin at 0
-	uint32_t buf_offset;		// distance from BOF to buf_top
+	uint32_t line_num;			// current line number in file fname
 	uint8_t *buf_top;			// a pointer to the terminating NUL + 1 in the input buffer
-	uint8_t *unget;				// storage for "ungetted" bytes in read_compressed
+	uint8_t *u;					// storage for "ungetted" bytes in read_compressed
 };
 
+
+uint16_t off[256];			// just a little reusable array
 
 int tokenize_op(uint8_t *s, uint8_t *d, int prep_flg);
 int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, double *ldp, int32_t ldblcnt);
 uint8_t detect_c_keyword(uint8_t *name, uint32_t len);
 void show_error(int level, char *str1, char *r, int how_far);
 void handle_emit_overflow();
-
-
-uint16_t off[256];			// just a little reusable array
-uint32_t *lnum_buf;			// dynamic allocation for multiple line_nums arrays
-
+void major_copyup(uint32_t added, int depth);
 
 // special preprocessor byte "tokens" -- but they aren't really tokens
+#define ESCNL_TOK			0x18			// a standin for \ \n
 #define ESCCHAR_LE7F		0x1b			// the next input byte must be considered as a literal, after the 0x80 bit is removed
 #define ESCCHAR_GT7F		0x1c			// the next input byte must be considered as a literal (value >= 0x80)
+#define PSEUDO_NL			0x1d			// this byte is treated as a newline by the preprocessor
+#define LFILE_TOK			0x1e			// the next LINEFILE string in the buffer corresponds to this point
 #define ESCCHAR_TOK			0x1f			// the next input byte has already been truly tokenized
 
 
@@ -127,9 +115,10 @@ void date_time (int timeflg)
 void read_compressed(struct pp_recursion_info *inf, uint8_t *cpydwn, int32_t cdsize)
 {
 	uint8_t *p, *c, *sp, *cmp;
-	int lines_processed, i, j, k;
+	int lines_processed, i, j, cdsz;
 
 	// a little initting
+	cdsz = cdsize;
 	lines_processed = 0;
 	cmp = emit_ptr + 16*1024;				// compressed output storage
 	sp = cmp;
@@ -138,11 +127,11 @@ void read_compressed(struct pp_recursion_info *inf, uint8_t *cpydwn, int32_t cds
 	p[-1] = 0;
 	// copy in any raw ungetted bytes from the previous call to read_compressed
 	i = inf->state >> 4;
-	c = inf->unget;
+	c = inf->u;
 	while (--i >= 0) *(p++) = *(c++);
 
 read_more:
-	j = (15 * 1024 - lnum_cnt) * 2 - cdsize;				// read the file in 30K gulps, starting at location p
+	j = 30 * 1024 - cdsz;					// read the file in 30K gulps, starting at location p
 	// standard read loop -- i is always initted to -1
 	while (i != 0)
 	{
@@ -175,7 +164,7 @@ read_more:
 	c = sp;						// compressed data write point (it is important that this be sp!)
 	sp = emit_ptr;				// 16K for string constant storage
 	// copy in the bit of data that needs to be at the front of the buffer
-	while (--cdsize >= 0) *(c++) = *(cpydwn++);
+	while (--cdsz >= 0) *(c++) = *(cpydwn++);
 	p = c + 64;
 	// 'j' is a boolean flag for whether the next incoming char is an escaped literal
 	j = 0;
@@ -197,21 +186,10 @@ read_more:
 		case BOL_STATE:
 			while (*p == '\n')					// process blank lines
 			{
-				*(c++) = '\n';					// temporarily emit newlines and then remove them again
+				*(c++) = '\n';
 				++lines_processed;
 				// suppress all whitespace at BOLs (not including returns or NULs)
 				while (whtsp_lkup[*++p] != 0);
-			}
-			if (c[-1] == '\n')					// encode line number info into line_nums[]
-			{
-				while (*--c == '\n') ++i;
-				*++c = ' ';						// replace any run of newlines with a single space
-				k = (++c - cmp) << 8;
-				while (i > 127)
-					line_nums[++lnum_cnt] = 0xfe | k, i -= 127;
-				if (i != 0)
-					line_nums[++lnum_cnt] = (i << 1) | k;
-				i = BOL_STATE;
 			}
 			// then parse the interesting non-whitespace, up to some kind of stopper
 			while (prep_src[*p] != 0) *(c++) = *(p++);		// emit a "sourcecode" byte
@@ -230,8 +208,7 @@ read_more:
 					if (*p == 0) *(sp++) = '\\';		// unget the stray
 					else
 					{
-						k = (c - cmp) << 8;					// BOF offset
-						line_nums[++lnum_cnt] = k | 3;		// flag for escaped newline, length of 1
+						*(c++) = ESCNL_TOK;
 						++lines_processed;
 						++p;								// note: whitespace after an escaped nl must be *kept*
 					}
@@ -291,8 +268,7 @@ read_more:
 				if (p[1] == '\n')		// escaped newline no-op
 				{
 					++lines_processed;
-					k = (c - cmp) << 8;					// BOF offset
-					line_nums[++lnum_cnt] = k | 3;		// flag for escaped newline, length of 1
+					*(c++) = ESCNL_TOK;
 					i = CLOSEQ_STATE;		// continue waiting for the closequote
 					p += 2;
 				}
@@ -312,7 +288,7 @@ read_more:
 			if (*p == '\\' && j == 0) i = ESCAPED_C_STATE1;	// go to escaped literal char state (returns to char literal state)
 			else
 			{
-// char constants are mapped up to the 0x80 to 0xff range, so they cannot be mistaken for text or special symbols (ie. #)
+	// char constants are mapped up to the 0x80 to 0xff range, so they cannot be mistaken for text or special symbols (ie. #)
 				j = 0;
 				if ((int8_t) *p >= 0)
 					*(c++) = ESCCHAR_LE7F;			// new escape char (for chars from 0 to 0x7f)
@@ -396,8 +372,7 @@ read_more:
 			{
 				++lines_processed;
 				++p;
-				k = (c - cmp) << 8;					// BOF offset
-				line_nums[++lnum_cnt] = k | 3;		// flag for escaped newline, length of 1
+				*(c++) = ESCNL_TOK;
 				j = 0;			// *p is NOT an escaped literal
 				continue;		// the j==0 case below is for handling EOB cases -- jump around it
 			}
@@ -421,8 +396,8 @@ read_more:
 			inf->state = i;
 			i = sp - emit_ptr;
 			sp = emit_ptr;
-			// is enough room left in the OUTPUT buffer to do another read (and in line_nums)?
-			if (c - cmp < MAX_STRBUF_SIZE && lnum_cnt < 7000)
+			// is enough room left in the OUTPUT buffer to do another read?
+			if (c - cmp < MAX_STRBUF_SIZE)
 			{
 				p = c + 64;
 				while (--i >= 0) *(p++) = *(sp++);		// copy i chars from the unget buffer into p
@@ -444,24 +419,49 @@ read_more:
 	{
 		// if there is any "unget" info, save it for the next call to read_compressed
 		p = wrksp_top - j;
-		inf->unget = wrksp_top = p;
+		inf->u = wrksp_top = p;
 		// note: a small amount of memory (the unget size) will get temporarily leaked,
 		// but will be retrieved when the current recursion completes.
-		inf->state |= i << 4;
+		inf->state = i | (j << 4);
 		while (--j >= 0) *(p++) = *(sp++);
 	}
 	*c = 0;
 	total_lines += lines_processed;
 
 	// finally, do a copyup to the end of wrksp
-	// -- the buffer is usually big enough to deserve a call to memmove()
 	p = cmp;							// beginning of compressed output
 	j = c - p + 1;						// get the compressed length (incl. terminator)
-	inf->buf_offset += j;
 	wrksp_top -= j;
 	memmove (wrksp_top, p, j);
-	line_nums[lnum_cnt + 1] = 0xffffff00;		// put a stopper on the end of the line_nums array
-	inf->cur_lnum_idx = 0;
+}
+
+
+// returns the number of chars copied into the destination string (or 1, if no copy is done)
+uint32_t unescaped_EOL(uint8_t **s, uint8_t *dest, int do_copy, struct pp_recursion_info *inf)
+{
+	uint8_t *p;
+	uint32_t len;
+	len = 1;			// include the terminating NUL
+	p = *s;
+	// scan the defined string to an unescaped EOL as a "constant or macro expression" and store it
+	while (*p != '\n' && *p != 0x1d && *p != 0)		// note: 0x1d is an unescapable pseudo-newline
+	{
+		if (*p == ESCNL_TOK)
+		{
+			++inf->line_num;			// skip escaped newlines
+			++p;
+			*(emit_ptr++) = '\n';
+		}
+		else if (do_copy != 0)
+		{
+			++len;
+			*(dest++) = *(p++);
+		}
+		else ++p;
+	}
+	if (do_copy != 0) *(dest++) = 0;
+	*s = p;								// the caller wants to know where the actual EOL is
+	return len;
 }
 
 
@@ -470,6 +470,28 @@ void doublesharp()
 	int32_t i;
 	i = 0;
 	// HIHI!!! stub
+}
+
+
+// sadly, escaped newlines and spaces can get intermixed as whitespace
+uint32_t pp_whitespace (uint8_t **p, struct pp_recursion_info *inf)
+{
+	uint8_t r, *c;
+	c = *p;
+	r = 0;
+	while (1)
+	{
+		if (*c == ESCNL_TOK)
+		{
+			++inf->line_num;
+			*(emit_ptr++) = '\n';
+		}
+		else if (*c != ' ') break;
+		++r;
+		++c;
+	}
+	*p = c;
+	return r;			// length of whitespace
 }
 
 
@@ -485,101 +507,100 @@ uint8_t *pp_bypass(uint8_t *p, uint16_t type, struct pp_recursion_info *inf)
 	// for type 0, stop at any #else or #elif -- finding #else and #elif at top level are errors for type 1
 
 	// discard to an unescaped EOL -- there may be # chars on the line that shouldn't be processesed
-	j = (p - inf->buf_top) + inf->buf_offset;		// get line_num info for current line
-	i = 0;
-	while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
-	p = inf->buf_top + (line_nums[i] >> 8) - inf->buf_offset;
+	unescaped_EOL (&p, NULL, 0, inf);
 	while (1)
 	{
-		while (*p != '#' && *p != 0) ++p;
+		while (*p != '#' && *p != 0 && *p != '\n' && *p != ESCNL_TOK) ++p;
+		if (*p == '\n' || *p == ESCNL_TOK)
+		{
+			++p;
+			*(emit_ptr++) = '\n';		// even during bypassing, the newlines must still be emitted
+			++inf->line_num;			// they also need their line numbers counted
+			continue;
+		}
 
 		// verify there is at least one unescaped newline -- hitting a non-terminal end-of-buffer will mess up the logic
-		j = (p - inf->buf_top) + inf->buf_offset;		// get line_num info for current line
-		i = 0;
-		while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
-		c = inf->buf_top + (line_nums[i] >> 8) - inf->buf_offset;
-		if (line_nums[i] == 0xffffff00)					// line_nums signature for end-of-buffer
+		c = p;
+		while (*c != '\n' && *c != 0) ++c;			// do the verification *without* processing ESCNL tokens
+		if (*c == 0)
 		{
 			if (inf->fd >= 0)
 			{
 				// note: wrksp_top is the final load point for the new data
 				// (the second argument to read_compressed is the copydown pointer)
 				wrksp_top = inf->buf_top;
-				i = j = 0;
-				while (i <= lnum_cnt) j += (line_nums[i++] >> 1) & 0x7f;
-				inf->line_num_base += j;
-				lnum_cnt = -1;											// then reinit the line_nums
 				read_compressed(inf, p, (int32_t) (wrksp_top - p) - 1);
 				p = wrksp_top;
+				// whether the bypass loop stopped because p == 0, or == #, it causes no harm to check again
+				continue;
 			}
-			if (*p == 0) return p;
-			j = (p - inf->buf_top) + inf->buf_offset;		// recalculate the eol pointer
-			i = 0;
-			while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
-			c = inf->buf_top + (line_nums[i] >> 8) - inf->buf_offset;
+			else if (*p == 0) return p;
 		}
-		if (*p == '#')
+	// HIHI!!! if (c - p > 15k) show_error (0, "line is too long to preprocess", NULL, 1);		?? and return?
+		// note: at this point, logically, p must equal '#'
+		++p;
+		pp_whitespace (&p, inf);
+		if (*c == 0) return p;			// this is tricky, but it's correct
+		// do a simhash and parse for all the possible kinds of "#if"s & family
+		j = 0;
+		i = 1;
+		while (*p >= 'a' && *p <= 'w' && i < TWENTY2EXP7 - 1)		// stop looping after 7 characters
 		{
-			while (*++p == ' ');
-			// do a simhash and parse for all the possible kinds of "#if"s & family
-			j = 0;
-			i = 1;
-			while (*p >= 'a' && *p <= 'w' && i < TWENTY2EXP7 - 1)		// stop looping after 7 characters
-			{
-				j += (*p - 'a') * i;
-				i *= 22;
-				++p;
-			}
-			if (j == SIMHASH_IF)
-			{
-				// descend a recursion layer -- look for the #endif for this #if
-				cur_type = 1;
-				++recur_depth;
-			}
-			else if (j == SIMHASH_ELIF)
-			{
-				if (recur_depth == 0)
-				{
-					if (type == 0) break;
-					else show_error(0, "#elif after #else", NULL, 1);
-				}
-				// continue looking for the #endif for this #if/elif
-			}
-			else if (j == SIMHASH_IFDEF)
-			{
-				// descend a recursion layer -- look for the #endif for this #ifdef
-				cur_type = 1;
-				++recur_depth;
-			}
-			else if (j == SIMHASH_IFNDEF)
-			{
-				// descend a recursion layer -- look for the #endif for this #ifndef
-				cur_type = 1;
-				++recur_depth;
-			}
-			else if (j == SIMHASH_ELSE)
-			{
-				if (recur_depth == 0)
-				{
-					if (type == 0) break;
-					else show_error(0, "another #else after #else", NULL, 1);
-				}
-				// continue looking for the #endif for this #if/else
-			}
-			else if (j == SIMHASH_ENDIF)
-			{
-				if (recur_depth == 0) break;
-				else
-				{
-					if (--recur_depth == 0) cur_type = type;
-				}
-			}
-			// skip over any sharp (#) chars out to EOL after a preprocessor command
-			p = c;
+			j += (*p - 'a') * i;
+			i *= 22;
+			++p;
 		}
+		c = p;
+		unescaped_EOL (&c, NULL, 0, inf);		// c was already at the EOL, but this call will update the line number
+		if (j == SIMHASH_IF)
+		{
+			// descend a recursion layer -- look for the #endif for this #if
+			cur_type = 1;
+			++recur_depth;
+		}
+		else if (j == SIMHASH_ELIF)
+		{
+			if (recur_depth == 0)
+			{
+				if (type == 0) break;
+				else show_error(0, "#elif after #else", NULL, 1);
+			}
+			// continue looking for the #endif for this #if/elif
+		}
+		else if (j == SIMHASH_IFDEF)
+		{
+			// descend a recursion layer -- look for the #endif for this #ifdef
+			cur_type = 1;
+			++recur_depth;
+		}
+		else if (j == SIMHASH_IFNDEF)
+		{
+			// descend a recursion layer -- look for the #endif for this #ifndef
+			cur_type = 1;
+			++recur_depth;
+		}
+		else if (j == SIMHASH_ELSE)
+		{
+			if (recur_depth == 0)
+			{
+				if (type == 0) break;
+				else show_error(0, "another #else after #else", NULL, 1);
+			}
+			// continue looking for the #endif for this #if/else
+		}
+		else if (j == SIMHASH_ENDIF)
+		{
+			if (recur_depth == 0) break;
+			else
+			{
+				if (--recur_depth == 0) cur_type = type;
+			}
+		}
+		p = c;					// discard to an unescaped EOL after a preprocessor command
 	}
 	while (*--p != '#');		// return a ptr to the preprocessor *command* that ended the bypass
-	while (*++p == ' ');
+	++p;						// so back up, and then go forward again
+	while (*p == ' ' || *p == ESCNL_TOK) ++p;		// but do not reprocess ESCNLs through pp_whitespace!
 	return p;
 }
 
@@ -591,37 +612,39 @@ int32_t eval_fn_macro(uint8_t *rawdef, uint8_t *stor, struct pp_recursion_info *
 {
 	int32_t i, j, k;
 	uint8_t *p, *outp, *sp, *c;
+	sp = rawdef;
 	// find the unescaped EOL and put a 0 there as a stopper
-	j = (rawdef - inf->buf_top) + inf->buf_offset;
-	k = 0;
-	while ((line_nums[k] >> 8) <= (unsigned) j || (line_nums[k] & 1) != 0) ++k;
-	sp = inf->buf_top + (line_nums[k] >> 8) - inf->buf_offset - 1;		// convert back to a ptr
+	while (*sp != '\n' && *sp != 0) ++sp;
+	if (*sp == 0)
+		show_error (0, "function-like macro too long to parse", NULL, 1);
 	*sp = 0;
 
-	p = rawdef;							// the first byte of rawdef is always the TOK_OPAREN
-	while (*++p == ' ');
-	outp = emit_ptr;					// create a workspace pointer
+	p = rawdef + 1;									// the first byte of rawdef is always the TOK_OPAREN
+	while (*p == ' ' || *p == ESCNL_TOK) ++p;
+	outp = emit_ptr;						// create a workspace pointer
 	i = 0;
 	// count the number of arguments up to the close paren and get their names
 	while (*p != ')' && *p != 0)
 	{
-// if (*p == ',') return an "empty argument" error? a negative value? or just do a show_error and only copy a NUL byte? HIHI!!
+// XXX: if (*p == ',') return an "empty argument" error? a negative value? or just do a show_error and only copy a NUL byte?
 		off[i++] = p - rawdef;				// off[] is a 256 entry reusable short array
 		while (alnum_[*p] != 0) ++p;		// argument names *must* be alphanumeric
-		while (*p == ' ') ++p;
+		while (*p == ' ' || *p == ESCNL_TOK) ++p;		// whitespace before comma
 		if (*p == ',')
 		{
-			if (*++p == ' ') ++p;
+			++p;
+			while (*p == ' ' || *p == ESCNL_TOK) ++p;	// whitespace after comma
 		}
-		else if (*p != ')') show_error (0, "macro arguments syntax error (no close paren found)", NULL, 1);		// HIHI return?
+		else if (*p != ')') show_error (0, "macro arguments syntax error (no close paren found)", NULL, 1);		// XXX: return?
 	}
-	if (i > 255) show_error (0,"too many arguments in macro (max: 255)", NULL, 1);		// HIHI! return now?
+	if (i > 255) show_error (0,"too many arguments in macro (max: 255)", NULL, 1);		// XXX: return now?
 	// reemit the 4 and the arg count
 	*(outp++) = TOK_O_PAREN;
 	*(outp++) = (uint8_t) i;
 
-	// then parse and output the definition string -- find all occurrences of all arguments
-	while (*++p == ' ');
+	// then parse and output the definition string -- find and 'tokenize' all occurrences of all arguments
+	if (*p != 0) ++p;
+	while (*p == ' ' || *p == ESCNL_TOK) ++p;
 	off[i] = 0;
 
 	while (*p != 0)
@@ -648,21 +671,27 @@ int32_t eval_fn_macro(uint8_t *rawdef, uint8_t *stor, struct pp_recursion_info *
 				while (--j >= 0) *(outp++) = *(sp++);
 			}
 		}
-		while (alnum_[*p] == 0 && *p != 0) *(outp++) = *(p++);
+		while (alnum_[*p] == 0 && *p != 0)
+		{
+			if (*p == ESCNL_TOK) *(outp++) = ' ';
+			else *(outp++) = *p;
+			++p;
+		}
 	}
-	*p = ' ';
+	*p = '\n';
 
 	p = emit_ptr;
 	i = (int32_t) (outp - p);
 	j = i;
 	while (--j >= 0) *(stor++) = *(p++);
 	*(stor++) = 0;				// the def string must end in a NUL
-	return i + 1;		// return the number of chars copied into *stor (including the NUL)
+	return i + 1;				// return the number of chars copied into *stor (including the NUL)
 }
 
 
 // build the function-like macro argument pointer array
 // p should be pointing at the open paren of a function-like macro with up to argcnt arguments
+// return the length to the close paren, for updating p
 // XXX: for error messages, it would be nice to have a pointer to the macro name
 uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_info *inf)
 {
@@ -672,15 +701,13 @@ uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_i
 	memset (off, 0, 512);
 
 	// find the unescaped EOL and limit the first loop to that single line
-	len = (p - inf->buf_top) + inf->buf_offset;
-	i = 0;
-	while ((line_nums[i] >> 8) <= len || (line_nums[i] & 1) != 0) ++i;
-	sp = inf->buf_top + (line_nums[i] >> 8) - inf->buf_offset - 1;		// convert back to a ptr
+	sp = p;
+	while (*sp != '\n' && *sp != 0) ++sp;
 	j = MAX_MACRO_STRING;
 	if (sp - p < j) j = sp - p;
 
 	// find the close paren -- get the length (including the paren)
-	sp = p;
+	sp = p + 1;
 	len = 1;
 	while (*p != ')' && len <= j) ++p, ++len;
 
@@ -690,14 +717,25 @@ uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_i
 		return len;
 	}
 	i = 0;
-	j = 1;
-	while (*++sp == ' ') ++j;
+	j = 1 + (uint16_t) pp_whitespace (&sp, inf);
 	while (*sp != ')')
 	{
 		off[i++] = j;							// place the offsets of each arg into off[]
-		while (*sp != ',' && *sp != ')') ++j, ++sp;
+		while (*sp != ',' && *sp != ')')
+		{
+			if (*sp == ESCNL_TOK) ++inf->line_num, *(emit_ptr++)= '\n', *sp = ' ';
+			++j;
+			++sp;
+		}
 		if (*sp == ',') ++j, *(sp++) = 0;		// replace commas & close paren with NUL chars
-		while (*sp == ' ') ++j, ++sp;
+//		j += pp_whitespace(&sp, inf);		-- need to replace the ESCNLs with either a real space, or maybe a NOOP
+// HIHI!!! can you break a number in two with an escaped NL??? Should I allow sourcecode to break NAMES in half? GAH!
+		while (*sp == ' ' || *sp == ESCNL_TOK)
+		{
+			if (*sp == ESCNL_TOK) ++inf->line_num, *(emit_ptr++)= '\n', *sp = ' ';
+			++j;
+			++sp;
+		}
 	}
 	*p = 0;
 	if (i > argcnt)
@@ -711,54 +749,26 @@ uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_i
 
 
 // this routine expands the table that lives at the bottom of memory --
-// expanding it can cause a cascade effect, moving up one or more of the tables above it ...
-// theoretically even requiring a realloc of the entire workspace
+// expanding it will cause a cascade effect, moving up one or more of the tables above it
 void double_handle_table_size()
 {
 	int32_t i;
 	uint32_t j, k;
-	uint8_t *p;
-	k = max_names_per_hash * 256 * 4 * 2;				// new size of the handle table = offset to string table
-	name_strings = wrksp + k;
-// HIHI!!! the emit buffer is no longer the next buffer above name_strings!!!
-	if (name_strings + namestr_len > emit_base)			// would the moved string table overwrite the emit buffer?
-	{
-		// pick a new value for emit_base -- round up to 256K above what's needed
-		j = (k + namestr_len + 0x3ffff) & ~0x3ffff;
-		p = wrksp + j;
-		i = emit_ptr - emit_base;						// amount of data currently in buffer
-		if (j + i < wrk_rem - 30 * 1024 * MAX_NESTED_INCLUDES)		// would the emit buffer overflow the workspace?
-			memmove(p, emit_base, i);					// no, everything still fits -- move up the emit buffer
-
-//		else					// yes, it would overflow -- write all the emitted data to disk -- HIHI!!!! OYOY!!
-//		{
-//			if (j > wrk_rem - 30 * 1024 * MAX_NESTED_INCLUDES)		// would it overflow the workspace even with no data?
-//					expand_wrksp();
-			// if (outfd < 0) open it -- I need to have a filename prefigured?
-			// write (outfd, wrksp + wrk_used_base, i);
-		//	i = 0;
-//		}
-		emit_ptr = p + i;
-		emit_base = p;
-	}
-
-	// move up the string table
-	p = wrksp + k;
-	memmove (p, name_strings, namestr_len);
-	name_strings = p;
+	k = max_names_per_hash * 256 * 4 * 2;		// new size of the handle table
+	major_copyup(k / 2, -1);					// move up all other tables necessary
 
 	// move up the top 255 arrays of handles (array 0 doesn't move)
 	i = 256;
-	k = max_names_per_hash * 4;		// old number of bytes per array
+	k = max_names_per_hash * 4;					// old number of bytes per array
 	while (--i > 0)
 	{
-		j = k * i;					// old offset to handle entries for this hash
+		j = k * i;								// old offset to handle entries for this hash
 		// double their old offset, into the first half of the expanded array
 		memmove (wrksp + j * 2, wrksp + j, k);		// note: alt_memmove might be nice
 		// must zero out the top half of each expanded array
 		memset (wrksp + (j * 2) + k, 0, k);
 	}
-	memset (wrksp + k, 0, k);		// the new top half of array 0 must also be cleared
+	memset (wrksp + k, 0, k);					// the new top half of array 0 must also be cleared
 	// double the nph value
 	max_names_per_hash *= 2;
 }
@@ -822,12 +832,8 @@ int32_t get_name_idx(uint8_t hashval, uint8_t **symname, int32_t len, int insert
 // if a macro is being redefined, only complain if the def is *different*
 int compare_macros(uint8_t *m1, uint8_t *m2, struct pp_recursion_info *inf)
 {
-	uint32_t j;
-	int32_t i = 0;
-	// note: m1 is the stored definition -- check line_nums to see if m2 points to EOL
-	j = (m2 - inf->buf_top) + inf->buf_offset;
-	while ((line_nums[i] >> 8) <= (unsigned) j || (line_nums[i] & 1) != 0) ++i;
-	if (j == (line_nums[i] >> 8) - 1) m2 = m1cstr;		// if it was an EOL, point at a "-1" string
+	// note: m1 is the stored definition -- check to see if m2 points to EOL
+	if (*m2 == '\n') m2 = m1cstr;		// if it was an EOL, point at a "-1" string
 	while (*m1 == *m2 && *m1 != 0) ++m1, ++m2;
 	if (*m1 == 0) return 1;
 	return 0;
@@ -840,23 +846,21 @@ void pp_build_name(uint8_t *mname, uint8_t *p, uint8_t hash, int32_t len, struct
 	uint8_t *c, *s;
 	int32_t i, j, k;
 	uint32_t *handle_tbl;
+	major_copyup (len + MAX_STRBUF_SIZE, 0);			// check whether memory needs rearranging
 
-// HIHI!!! the emit buffer is no longer the one just above name_strings!! Use major_copyup()!
-	if (name_strings + namestr_len + len + MAX_STRBUF_SIZE > emit_base)
-		i = 0;
 	// copy the name into the string table
 	c = name_strings + namestr_len;
 	s = mname;
 	i = len;
 	while (--i >= 0) *(c++) = *(s++);
-	*(c++) = 0;					// need this pointer for saving the definition string
+	*(c++) = 0;					// need this pointer later for saving the definition string
 	s = mname;
 
-	// find the insertion point in the token list -- verify whether it's a duplicate
+	// find the insertion point in the hash list -- verify whether it's a duplicate
 	handle_tbl = (uint32_t *) wrksp;
 	i = get_name_idx(hash, &s, len, 1);
 
-	if (i < 0)			// got an illegal match -- name is already defined
+	if (i < 0)					// got a potentially illegal match -- name is already defined
 	{
 		if (compare_macros(s, p, inf) == 0)
 			show_error(0, "redefinition of macro ", (char *) mname, 1);
@@ -895,31 +899,14 @@ void pp_build_name(uint8_t *mname, uint8_t *p, uint8_t hash, int32_t len, struct
 
 	else			// standard #define -- store it verbatim to EOL (unless it's empty)
 	{
-		while (*s == ' ') ++s;
-		j = (p - inf->buf_top) + inf->buf_offset;			// line "number" of beginning of macro def
+		if (*s == '\n')
+		{
+			*--p = '1';			// empty define = macro set to "-1"
+			*--p = '-';
+		}
 		i = 0;
-		while ((line_nums[i] >> 8) <= (unsigned) j || (line_nums[i] & 1) != 0) ++i;
-		j = (s - inf->buf_top) + inf->buf_offset;
-		k = 0;
-		while ((line_nums[i] >> 8) <= (unsigned) j || (line_nums[i] & 1) != 0)
-		{
-			if ((line_nums[i] & 1) == 0) k = 1;		// does skipping spaces go to the next (non-escaped) line?
-			++i;
-		}
-		if (k != 0)
-		{
-			*(p--) = '1';			// parsed to a non-escaped newline = empty define = #define set to "-1"
-			*p = '-';
-			i = 2;
-			s = p;
-		}
-		else
-		{
-			// no newline yet -- find the line_nums[] that DOES point to the next non-escaped newline
-			while ((line_nums[i] & 1) != 0) ++i;	// the 1 bit indicates ESCAPED newlines
-			i = (line_nums[i] >> 8) - j - 1;		// don't include the "newline" (which was converted to a space)
-		}
-		alt_strncpy (c, s, i);
+		while (*p != 0 && *p != '\n') *(c++) = *(p++), ++i;
+		*c = 0;
 		namestr_len += len + 2 + i;
 	}
 }
@@ -1004,14 +991,11 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 	uint64_t *llp;
 	double *ldp;
 
-	*c = emit_ptr + 4;						// make two buffers in the work area
+	*c = emit_ptr + MAX_MACRO_STRING;			// make two buffers in the work area (64K is available)
+	// 3 bytes are needed below *c, but emit_ptr can *move up* during unescaped_EOL, if there are ESCNLs!
 	c[1] = *c + MAX_MACRO_STRING;
 	// copy raw input up to an unescaped EOL into c[0]
-	j = (*p - inf->buf_top) + inf->buf_offset;		// get line_num info for current line
-	i = 0;
-	while ((line_nums[i] >> 8) <= (unsigned) j || (line_nums[i] & 1) != 0) ++i;
-	j = (line_nums[i] >> 8) - j;
-	alt_strncpy (*c, *p, j);
+	j = unescaped_EOL (p, *c, 1, inf);
 
 	// macro substitution loop
 	toggle = 0;				// source string index
@@ -1112,6 +1096,8 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 					s = s1;						// point back at the input string
 				}
 			}
+			if (*s == ESCNL_TOK)
+				*(d++) = ' ';
 		}
 		*d = 0;
 	}
@@ -1119,8 +1105,10 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 	// all macros have now been substituted away -- only numbers and operators should remain
 	// so "tokenize" what is there
 	s = c[toggle];
+	// HIHI!! could put d at emit_ptr to regain some memory!
 	d = --*c;				// the tokenized string is always stored in *c - 1
-	*c -= 2;
+	// note: the -1 is there to give one byte of room to copy down, in case toggle == 0
+	*c -= 2;				// need 2 more stopper bytes on the front
 	d[-2] = 0;				// put an illegal token on the front, and parens around the expression
 	d[-1] = c_ops['('];
 	// get an aligned pointer just above c[1] (inside wrksp) for an array of 64b ints
@@ -1130,13 +1118,16 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 	*llp = 0;
 //	*ldp = 0.0;		HIHI -- should this be [255]?
 
-	i = TOK_SIZEOF + 2;			// first token that is available to use as an index in the preprocessor
+	// The point of all this is that the tokens up to NUM_PP_TOKENS are all used for operators, and all the
+	// values after that (up to 255) are used as indexes into either the "int" or "double" value arrays.
+	// there are about 60 operator tokens, which puts a strict limit on the length of an expression (255 - 60)
+	i = NUM_PP_TOKENS + 2;				// first token that is available to use as an index in the preprocessor
 	j = 255;
 	while (*s != 0)
 	{
-		if (*s >= '0' && *s <= '9')				// numbers always must start with a digit (minus signs are treated as operators)
+		if (*s >= '0' && *s <= '9')		// numbers always must start with a digit (minus signs are treated as operators)
 		{
-			h = num_parse(s, &s, &llp[i - TOK_SIZEOF - 1], &ldp[j - TOK_SIZEOF - 1], NULL, NULL);
+			h = num_parse(s, &s, &llp[i - NUM_PP_TOKENS - 1], &ldp[j - NUM_PP_TOKENS - 1], NULL, NULL);
 			if (h == 0)
 				*(d++) = (uint8_t) i++;
 			else
@@ -1154,13 +1145,13 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 				*(d++) = *++s, ++s;				// copy the next literal byte (and move beyond it)
 			else if (*s == ESCCHAR_LE7F)		// char literal (type 1) -- eliminate the 0x80 bit
 			{
-				llp[++i - TOK_SIZEOF - 1] = (uint64_t) (*++s & 0x7f);
+				llp[++i - NUM_PP_TOKENS - 1] = (uint64_t) (*++s & 0x7f);
 				*(d++) = (uint8_t) i;
 				++s;						// convert the next literal byte into a variable (and move beyond it)
 			}
 			else if (*s == ESCCHAR_GT7F)		// char literal (type 2)
 			{
-				llp[++i - TOK_SIZEOF - 1] = (uint64_t) *++s;
+				llp[++i - NUM_PP_TOKENS - 1] = (uint64_t) *++s;
 				*(d++) = (uint8_t) i;
 				++s;						// convert the next literal byte into a variable (and move beyond it)
 			}
@@ -1170,7 +1161,7 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 	}
 	*(d++) = c_ops[')'];			// put a tokenized ) on the end of the expression
 	*d = 0;
-	i -= TOK_SIZEOF;
+	i -= NUM_PP_TOKENS;
 
 	i = calculate_expr(*c + 1, llp, i, ldp, 256 - j);
 	return i;
@@ -1189,13 +1180,14 @@ int32_t name_lookup(uint8_t *p, struct pp_recursion_info *inf)
 }
 
 
-void cpp_parse(struct pp_recursion_info *pinfo, uint8_t *lfile_strs, uint32_t *lstrs_len)
+void cpp_parse(struct pp_recursion_info *pinfo, uint8_t *lfile_strs, uint32_t *lstrs_len, uint8_t *fname)
 {
 	uint32_t j, k;
 	int32_t i;
 	uint8_t *p, *c, *sp, hsh_val, bypass_flg;
 	struct pp_recursion_info ninfo;
 
+	cur_fname = fname;			// only used by show_error
 	// Each layer of nested include files requires a 60K allocation for line number info,
 	// plus a 30K read buffer -- so there has to be a depth limit related to the minimum
 	// allocation size of the workspace. It is a user-modifiable value in config.h.
@@ -1224,7 +1216,7 @@ void cpp_parse(struct pp_recursion_info *pinfo, uint8_t *lfile_strs, uint32_t *l
 			else
 			{
 				// whitespace is legal after the #
-				while (*p == ' ') ++p;
+				pp_whitespace(&p, pinfo);
 				sp = p;						// save a pointer
 	// parse occurrences of #if, #ifdef, #ifndef, #endif, #elif, #else, #pragma, #include, #define, #warning, #error, #line, #undef
 	// -- by using a simple perfect hash, and the fact that the highest letter in that list is 'w'
@@ -1241,23 +1233,22 @@ bypass_done:
 				// the #include_next command is too long to hash (it overflows) -- handle it as a special case
 				if (*p == '_' && j == SIMHASH_INCLUDE)
 				{
+					sp = p;
+					unescaped_EOL (&sp, NULL, 0, pinfo);
 					// finish detecting the "next" part
 					// if (strncmp(p, "next", 4) != 0)
 					goto unrecognized;
 					// p += 4, verify whitespace, and do the rest of it -- XXX
 				}
-				else if (*p != ' ')  goto unrecognized;
+				else if (*p != ' ' && *p != '\n' && *p != ESCNL_TOK && *p != PSEUDO_NL)  goto unrec2;
 // Note: the SIMHASH values are too big for a switch statement to handle efficiently -- it would just produce this same elseif block
 				else if (j == SIMHASH_INCLUDE)
 				{
-					while (*p == ' ') ++p;
+					pp_whitespace (&p, pinfo);
+					c = p;
+					unescaped_EOL (&c, NULL, 0, pinfo);			// process all the escaped newlines to EOL
 					if (*p != '"' && *p != '<') goto unrecognized;
 					c = p++;						// note: a 0 EOB byte should be impossible
-					j = (c - pinfo->buf_top) + pinfo->buf_offset;		// get line_num info, and find the unescaped EOL
-					i = 0;
-					while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
-					sp = pinfo->buf_top + (line_nums[i] >> 8) - pinfo->buf_offset - 1;
-					*sp = '\n';						// put an unusual character at the EOL as a stopper
 					if (*(c++) == '"')				// normal include file?
 					{
 						while (*p != '\"' && *p != '\n') ++p;
@@ -1271,37 +1262,33 @@ bypass_done:
 						sp = (uint8_t *) SYS_INCLUDE_PATHS;
 					}
 	
-					// each "depth" of included file has its own 16K entry line_nums array
-					line_nums = lnum_buf + (16 * 1024 * ninfo.depth);
-					// the next line_nums points to the "line directive" string for the new file
-					line_nums[0] = (*lstrs_len << 8) | 1;
-					// then always add a fake "escaped newline" at position 0
-					line_nums[1] = 3;
 					j = p - c;								// length of filename
-					alt_strncpy (lfile_strs + *lstrs_len, (uint8_t *) "00000000", 8);
+	// HIHI!!! stick a fake token in the output stream to match against lfile_strs
+					alt_strncpy (lfile_strs + *lstrs_len, (uint8_t *) "00000001", 8);
 					*lstrs_len += 8;
-					ninfo.fname = lfile_strs + *lstrs_len;								// permanently save the filename pointer
+					ninfo.u = lfile_strs + *lstrs_len;				// cheat and temporarily save the filename pointer here
 					// note: this filename may also be displayed in error messages, and it is used to open the file
 					ninfo.fd = i = -1;
 					while (ninfo.fd < 0 && i != 0)
 					{
 						// sp points to a directory to search for the specified include file
-						k = alt_strcpy(ninfo.fname, sp);
+						k = alt_strcpy(ninfo.u, sp);
 						sp += k + 1;
-						alt_strncpy(ninfo.fname + k, c, j);
-						ninfo.fd = qcc_open_r((char *) ninfo.fname, 0);
+						alt_strncpy(ninfo.u + k, c, j);
+						ninfo.fd = qcc_open_r((char *) ninfo.u, 0);
 						if (*sp == 0) i = 0;
 					}
+					sp = ninfo.u;		// filename ptr (with full path)
 					// failed after looking in ALL the supplied directories?
 					if (ninfo.fd < 0)
 					{
-						line_nums = lnum_buf + (16 * 1024 * pinfo->depth);
 						*p = 0;			// p is pointing at the closequote on the fname
 						show_error(0, "File not found, trying to include file ", (char *) c, 1);
 						*p = '"';
 						goto discard;
 					}
-					*lstrs_len += strlen ((char *) ninfo.fname) + 1;			// include the NUL on the filename
+					*lstrs_len += strlen ((char *) sp) + 1;			// include the NUL on the filename
+					*(emit_ptr++) = LFILE_TOK;
 	// make a pretty display on the screen with an informational message about each included file?
 	//					strncpy ((char *) ???, "          ", ninfo.depth);		// make a pretty indention to show nested includes
 		// HIHI if being verbose? -- write (1, emit_ptr, strlen(emit_ptr)); -- and then a \n?
@@ -1309,37 +1296,27 @@ bypass_done:
 					// read in the included file -- suppress comments and whitespace
 					ninfo.buf_top = wrksp_top;
 					ninfo.state = 0;
-					ninfo.buf_offset = 0;
-					ninfo.cur_lnum_idx = 0;
-					ninfo.line_num_base = 0;
-					i = lnum_cnt;					// preserve the value of lnum_cnt through the recursion
-					lnum_cnt = 1;					// set up line numbering for the included file
+					ninfo.line_num = 1;
 
 					read_compressed (&ninfo, NULL, 0);
-					cpp_parse(&ninfo, lfile_strs, lstrs_len);				// recurse
-					lnum_cnt = i;					// recover lnum_cnt and *line_nums
-					line_nums = lnum_buf + (16 * 1024 * pinfo->depth);
+					cpp_parse(&ninfo, lfile_strs, lstrs_len, sp);				// recurse
+					// note: the final NUL byte of the recursed file was written on top of p
+					++p;
 
-					// recalculate the current line number
-					j = (p - pinfo->buf_top) + pinfo->buf_offset;
-					i = 0;
-					k = pinfo->line_num_base;
-					if (k != 0)					// HIHI!!! debugging!!!
-						c = p;
-					while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) k += (line_nums[i++] >> 1) & 0x7f;
-//					sp = pinfo->buf_top + (line_nums[i] >> 8) - pinfo->buf_offset - 1;	-- points at the \n, typically
 					// output a "line directive" pointing back to the parent file
-					line_nums[++lnum_cnt] = (namestr_len << 8) | 1;
-					// then always add a fake "escaped newline" at the current file position
-					line_nums[++lnum_cnt] = (j << 8) | 3;
 					c = lfile_strs + *lstrs_len;
 					i = 8;
+					k = pinfo->line_num;
 					while (--i >= 0) *(c++)= hexout[k >> (i * 4)];
-					*lstrs_len += 8 + alt_strcpy (c, pinfo->fname) + 1;
+					*lstrs_len += 8 + alt_strcpy (c, fname) + 1;
+					*(emit_ptr++) = LFILE_TOK;
+					cur_fname = fname;			// only used by show_error
 				}
 				else if (j == SIMHASH_DEFINE)
 				{
-					while (*p == ' ') ++p;
+					pp_whitespace (&p, pinfo);
+					c = p;
+					unescaped_EOL (&c, NULL, 0, pinfo);		// process escaped newlines to EOL
 					c = p;
 					i = 0;
 					while (alnum_[*p] != 0) ++p, ++i;
@@ -1350,7 +1327,8 @@ bypass_done:
 						// if the name ends on an open paren WITH NO WHITESPACE, it's a "function-like" macro
 						if (*p == '(') *p = TOK_O_PAREN;		// flag it!
 						// otherwise, verify that the defined name ended in whitespace
-						else if (*p != ' ') goto unrecognized;
+						else if (*p != ' ' && *p != '\n' && *p != ESCNL_TOK) goto unrecognized;
+						while (*p == ' ' || *p == ESCNL_TOK) ++p;
 						pp_build_name(c, p, hsh_val, i, pinfo);
 					}
 					else
@@ -1358,7 +1336,6 @@ bypass_done:
 				}
 				else if (j == SIMHASH_IF)
 				{
-					while (*p == ' ') ++p;
 					// evaluate -- if the result is 0 (false), bypass to the next matched elif, else, or endif
 					i = eval_const_expr(&p, pinfo);
 					if (i == 0)
@@ -1370,7 +1347,7 @@ bypass_done:
 				}
 				else if (j == SIMHASH_IFDEF)
 				{
-					while (*p == ' ') ++p;
+					pp_whitespace (&p, pinfo);
 					// get the token name and try to find it
 					i = name_lookup(p, pinfo);
 					// if it's not there, bypass to the next matched elif, else, or endif
@@ -1380,10 +1357,11 @@ bypass_done:
 						p = pp_bypass(p, 0, pinfo);
 						goto bypass_done;
 					}
+					unescaped_EOL (&p, NULL, 0, pinfo);
 				}
 				else if (j == SIMHASH_IFNDEF)
 				{
-					while (*p == ' ') ++p;
+					pp_whitespace (&p, pinfo);
 					// get the token name and try to find it
 					i = name_lookup(p, pinfo);
 					// if it's there, bypass to the next matched elif, else, or endif
@@ -1393,6 +1371,7 @@ bypass_done:
 						p = pp_bypass(p, 0, pinfo);
 						goto bypass_done;
 					}
+					unescaped_EOL (&p, NULL, 0, pinfo);
 				}
 				else if (j == SIMHASH_ELIF)
 				{
@@ -1408,6 +1387,7 @@ bypass_done:
 							goto bypass_done;
 						}
 					}
+					unescaped_EOL (&p, NULL, 0, pinfo);
 				}
 				else if (j == SIMHASH_ELSE)
 				{
@@ -1418,22 +1398,22 @@ bypass_done:
 						p = pp_bypass(p, 1, pinfo);
 						goto bypass_done;
 					}
+					unescaped_EOL (&p, NULL, 0, pinfo);
 				}
 				// #endif is really just a placeholder no op -- do nothing
-				else if (j == SIMHASH_ENDIF) ;
+				else if (j == SIMHASH_ENDIF)
+					unescaped_EOL (&p, NULL, 0, pinfo);
 				else if (j == SIMHASH_UNDEF)
 				{
-					while (*p == ' ') ++p;
+					pp_whitespace (&p, pinfo);
 					i = name_lookup(p, pinfo);
 					if (i < 0) delete_name_hash(i);
+					unescaped_EOL (&p, NULL, 0, pinfo);
 				}
 				else if (j == SIMHASH_WARNING)
 				{
 					c = p;												// print to eol as a compiler warning
-					j = (p - pinfo->buf_top) + pinfo->buf_offset;		// get line_num info for current line
-					i = 0;
-					while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
-					p = pinfo->buf_top + (line_nums[i] >> 8) - pinfo->buf_offset;
+					unescaped_EOL (&p, NULL, 0, pinfo);
 					write (2, (char *) c, p - c);
 					write (2, "\n", 1);
 					++total_warns;
@@ -1441,35 +1421,35 @@ bypass_done:
 				else if (j == SIMHASH_ERROR)
 				{
 					c = p;												// print to eol as a compiler error
-					j = (p - pinfo->buf_top) + pinfo->buf_offset;
-					i = 0;
-					while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
-					p = pinfo->buf_top + (line_nums[i] >> 8) - pinfo->buf_offset;
+					unescaped_EOL (&p, NULL, 0, pinfo);
 					write (2, (char *) c, p - c);
 					write (2, "\n", 1);
 					++total_errs;
 				}
 				else if (j == SIMHASH_LINE)
 				{
+					unescaped_EOL (&p, NULL, 0, pinfo);
 					i = 0;		// HIHI!! this directive provides a line number (and an optional filename) (but what is the exact format?)
 					// first 8 bytes is line number as a hex char string (1bcd0408), then a NUL terminated filename
 					// -- which must replace pinfo->fname, and pinfo->line_num
 				}
 				else if (j == SIMHASH_PRAGMA)
 				{
+					unescaped_EOL (&p, NULL, 0, pinfo);
 					i = 0;		// the only one is "pack"? Or are "push" and "pop" also valid?  HIHI!!
 					// pack overrides any automatic alignment in structs
 				}
 				else
+				{
+unrec2:
+					unescaped_EOL (&p, NULL, 0, pinfo);		// must handle any escaped newlines to EOL
 unrecognized:					// unrecognized preprocessor command
 					show_error (0, "Preprocessor command can not be parsed #", (char *) sp, -1);
+				}
 discard:
-				// preprocessor commands discard to an unescaped EOL
-				j = (p - 1 - pinfo->buf_top) + pinfo->buf_offset;		// get line_num info for old line
-				i = pinfo->cur_lnum_idx;
-				while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) ++i;
-				p = pinfo->buf_top + (line_nums[i] >> 8) - pinfo->buf_offset;
-				pinfo->cur_lnum_idx = i;
+				// the 0x1d character is treated like a special newline for preprocessor commands only
+				while (*p != '\n' && *p != PSEUDO_NL && *p != 0) ++p;		// preprocessor commands always discard to an unescaped EOL
+				if (*p == PSEUDO_NL) ++p;
 
 			}		// end of doublesharp if-else
 			break;										// end of preprocessor commands section (#)
@@ -1488,14 +1468,16 @@ discard:
 		case '[':	case ']':	case ';':
 		case '{':	case '}':	case ':':
 		case ',':	case '.':
+			if (emit_ptr[-1] == '\n' || emit_ptr[-2] == '\n')
+				++nxt_pass_info[PP_LINE_CNT];			// try to estimate the number of compressed lines
 			*(emit_ptr++) = *(p++);
 			break;
 
 		case '"':						// all escaped newlines have already been removed from inside string constants
+			if (emit_ptr[-1] == '\n') ++nxt_pass_info[PP_LINE_CNT];
 			sp = p;
 			*(emit_ptr++) = *(p++);
 			while (*p != '"' && *p != '\n' && *p != 0) *(emit_ptr++) = *(p++);
-// HHI!! save a max length = p - sp?
 			if (*p == '\n') show_error(0,"newline in string constant", NULL, 1);
 			else if (*p == 0) show_error(0,"unmatched doublequotes at EOF", NULL, 1);
 			else *(emit_ptr++) = *(p++);
@@ -1507,11 +1489,12 @@ discard:
 		case '4':	case '5':
 		case '6':	case '7':
 		case '8':	case '9':
+			if (emit_ptr[-1] == '\n') ++nxt_pass_info[PP_LINE_CNT];			// try to count the number of compressed lines
 			++nxt_pass_info[PP_NUM_CNT];			// total count of all numeric values
 			// overestimate a total count of numeric constants with values bigger than 255 (just do a quickie test)
 			// -- if there are more than 2 digits in the number or it's a float, then "it's bigger than 255"
 			c = p + 1;
-			if (*p == '0' && (p[1] | 0x20) == 'x') c += 2;
+			if (*p == '0' && (p[1] | 0x20) == 'x') c += 2;			// HIHI!!!!! add in 0b!
 			if ((hex_lkup[*c] >= 0 || *c == '.') && (hex_lkup[c[1]] >= 0 || c[1] == '.'))
 				++nxt_pass_info[PP_BIG_NUMS];
 			while (alnum_[*p] != 0) *(emit_ptr++) = *(p++);			// emit the raw text into the output buffer
@@ -1521,6 +1504,7 @@ discard:
 		case '_':		// parse occurrences of ___LINE__, ___FILE__, ___DATE__, ___TIME__, ___FUNCTION__, ___VA_ARGS__
 			if (p[1] == '_' && p[2] == '_')
 			{
+				if (emit_ptr[-1] == '\n') ++nxt_pass_info[PP_LINE_CNT];			// try to count the number of compressed lines
 				sp = p;
 				p += 3;
 				j = 0;
@@ -1537,17 +1521,15 @@ discard:
 				p += 2;
 				if (j == SIMHASH_LINE)				// emit the line number as a char string
 				{
-			// HIHI!! gotta write a function that calculates a line number from 'p'
-					j = 0;
-					i = ntc (j, (char *) emit_ptr);
+					i = ntc (pinfo->line_num, (char *) emit_ptr);
 					emit_ptr += i;
 					break;
 				}
 				else if (j == SIMHASH_FILE)			// emit the full pathname as a quoted string
 				{
-					i = strlen((char *) pinfo->fname);
+					i = strlen((char *) fname);
 					*(emit_ptr++) = '"';
-					c = pinfo->fname;
+					c = fname;
 					while (--i >= 0) *(emit_ptr++) = *(c++);
 					*(emit_ptr++) = '"';
 					break;
@@ -1577,8 +1559,12 @@ discard:
 					i = 0;
 				}
 				else
+				{
 bad_3_:
 					show_error(0, "unknown preprocessor macro: ", (char *) sp, 1);
+					// HIHI -- should there be some sort of discarding here? To *where*??
+					break;
+				}
 				// note: do not discard after handling these macros -- they are in the middles of strings!
 				if (p - emit_ptr < 0x10000) handle_emit_overflow();
 			}
@@ -1598,6 +1584,7 @@ bad_3_:
 		case 'o':	case 'p':	case 'q':	case 'r':
 		case 's':	case 't':	case 'u':	case 'v':
 		case 'w':	case 'x':	case 'y':	case 'z':
+			if (emit_ptr[-1] == '\n') ++nxt_pass_info[PP_LINE_CNT];			// try to count the number of compressed lines
 			c = p;			// keyword, macro, variable, constant, function name, etc.
 			sp = emit_ptr;
 			j = 0;
@@ -1647,6 +1634,16 @@ bad_3_:
 			}
 			break;
 
+		case '\n':
+		case ESCNL_TOK:
+			while (*p == '\n' || *p == ESCNL_TOK)
+			{
+				*(emit_ptr++) = '\n';
+				++pinfo->line_num;
+				++p;
+			}
+			break;
+
 		case 0:
 			return;
 
@@ -1657,47 +1654,20 @@ bad_3_:
 		}		// end of switch on *p
 
 		// verify that emit_ptr isn't close to overflowing (soft 64k limit)
-		if ((uint8_t *) olnums - emit_ptr < 0x10000) handle_emit_overflow();
+		if (p - emit_ptr < 0x10000) handle_emit_overflow();
 
 		// make sure there is always at least 16K in the input buffer, unless the file is closed
 		// -- that way, running into the EOB is always just an error
-		if (pinfo->fd >= 0 && pinfo->buf_top - p < 16 * 1024)
+		if (pinfo->fd >= 0 && pinfo->buf_top - p < 0x4000)
 		{
 			wrksp_top = pinfo->buf_top;
-			// line_nums is about to get overwritten -- the only thing that must be saved from it is the current line number
-			j = (p - pinfo->buf_top) + pinfo->buf_offset;			// calculate the line number of the current p pointer
-			i = k = 0;
-			while ((line_nums[i] >> 8) <= j || (line_nums[i] & 1) != 0) k += (line_nums[i++] >> 1) & 0x7f;
-			pinfo->line_num_base += k;
-			lnum_cnt = -1;											// then reinit the line_nums
 			read_compressed(pinfo, p, (int32_t)(wrksp_top - p - 1));
 			p = wrksp_top;
 		}
 		// verify that at least one complete line is still loaded -- to prevent infinite loops
-		// HIHI!!!  scan line_nums and see if line_nums[i] == 0xffffff00 -- the EOB marker (but is there a problem with the last line in a file?)
-//		if (*c == 0 && *p != 0) show_error(0, "line is too long to process", NULL, 1);
-	}
-}
-
-
-void post_cpp()
-{
-	size_t i;
-	*(emit_ptr++) = TOK_ENDOFBUF;		// (must increment the pointer to calculate the correct total buffer length)
-	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
-	{
-		handle_emit_overflow();			// dump the tail end
-		close (outfd);
-		outfd = -1;
-		outf_exists = 1;	// set a flag for the next pass, to let it know there is an input file
-// HIHI!! flip the iof_in_toggle? Or should I delete the old input file and rename this one back to the input filename??
-	}
-	else
-	{
-		// all the emitted data managed to fit into memory
-		i = emit_ptr - emit_base;					// total size of preprocessor output
-		wrksp_top = wrksp + wrk_rem - i;			// copy it all up to end at wrksp + wrk_rem
-		memmove (wrksp_top, emit_base, i);
+		c = p;
+		while (*c != '\n' && *c != PSEUDO_NL && *c != 0) ++c;
+		if (*c == 0 && *p != 0) show_error(0, "line is too long to process", NULL, 1);
 	}
 }
 
@@ -1710,19 +1680,12 @@ int preprocess(int fd, uint8_t *fname)
 	uint8_t *lfile_strs;
 	struct pp_recursion_info inf;
 
-	// dynamic allocation for MAX_NESTED_INCLUDES arrays of raw line_nums (usually 640K)
-	lnum_buf = (uint32_t *) malloc(32 * 1024 * 2 * MAX_NESTED_INCLUDES);
-	line_nums = lnum_buf;
-
-	// prepare to read one 30K gulp of the main source file -- and compress out C comments and whitespace
+	// prepare to read the first 30K gulp of the main source file
 	inf.depth = 0;
-	inf.fname = fname;
 	inf.state = 0;
 	inf.fd = fd;
 	inf.buf_top = wrksp_top;
-	inf.buf_offset = 0;
-	inf.cur_lnum_idx = 0;
-	inf.line_num_base = 0;
+	inf.line_num = 1;
 
 	// In the preprocessor, "names" consist of #defined macros.
 	// The preprocessor does all the necessary substitutions on all the names,
@@ -1739,7 +1702,6 @@ int preprocess(int fd, uint8_t *fname)
 	// just above that is a variable sized space for storing macro names and definitions (with a 2M limit)
 	// just above that is a 10K space for storing filename and line number strings
 	// just above that is the emit storage buffer for the preprocessor -- the main output buffer
-	// halfway between the emit buffer base and wrksp_top is a storage area for line number information
 
 	// SO: create the pointers, and calculate the offsets for setting up all those workspace buffers
 	// the name table is initially allocated containing 32 empty name handles per hash value
@@ -1755,55 +1717,62 @@ int preprocess(int fd, uint8_t *fname)
 	namestr_len = 0;
 
 	// calculate the position of the next buffer (above name_strings) -- the LINEFILE strings
-	i = ((wrk_rem / 4) + 3) & ~3;
+	i = ((wrk_rem / 2) + 3) & ~3;
 	// initially limit the name strings to a 2M max
 	if (i > 2 * 1024 * 1024) i = 2 * 1024 * 1024;
 	lfile_strs = wrksp + i;									// set the pointer
 	i += 10240;												// allocate 10K for the LINEFILE strings
 	emit_base = wrksp + i;									// and set the base for the emit buffer
 	emit_ptr = emit_base;
-	*line_nums = 1;											// must pre-emit the first LINEFILE for the input file
-	line_nums[1] = 3;										// "escaped" newline -- count of 1
-	lnum_cnt = 1;
-	// it is most convenient to read some of the main source file NOW, before setting  up the olnums buffer
 	read_compressed(&inf, NULL, 0);
 
-	ol_cnt = 0;			// setup the line_nums array for the **post processed** sourcecode
-	i += (((wrk_rem - i) / 2) + 3) & ~3;
-	olnums = (uint32_t *)(wrksp + i);
-
 	// then enter all these base pointers and lengths into the copyup control arrays
-	*base_ptrs = name_strings;
+	*base_ptrs = &name_strings;
 	*cur_usage = &namestr_len;
 	*tshft = 0;
-	base_ptrs[1] = lfile_strs;
+	base_ptrs[1] = &lfile_strs;
 	cur_usage[1] = &lstrs_len;
 	tshft[1] = 0;
-	base_ptrs[2] = emit_base;
+	base_ptrs[2] = &emit_base;
 	cur_usage[2] = &emit_ptr;
-	tshft[2] = 0x80;				// flag that emit_ptr is a ptr, not a length
-	base_ptrs[3] = olnums;
+	tshft[2] = 0x90;				// flag that emit_ptr is a ptr (not a length) and to use special overflow handler #1
+	base_ptrs[3] = &wrksp_top;
 	cur_usage[3] = NULL;
 
-	// copy in the global predefines now, for processing -- as text, prepended to the source file	HIHI!!! redoing with direct entires!
-//	i = da_tot_entrylen[PREDEFINES];
-//	memmove (wrksp_top - i, da_buffers[PREDEFINES], i);
-	memset (nxt_pass_info, 0, 16);
+	// copy in the global predefines now, for processing -- as text, prepended to the source file
+	i = da_tot_entrylen[PREDEFINES];
+	memmove (wrksp_top - i, da_buffers[PREDEFINES], i);
+	memset (nxt_pass_info, 0, 20);
 	outfd = -1;
 
-	alt_strncpy (lfile_strs, (uint8_t *) "00000000", 8);						// must pre-emit the first LINEFILE for the input file
+	alt_strncpy (lfile_strs, (uint8_t *) "00000001", 8);						// must pre-emit the first LINEFILE for the input file
 	lstrs_len = 8 + alt_strcpy (lfile_strs + 8, (uint8_t *) fname) + 1;			// include the NUL on the filename
-
+	*(emit_ptr++) = LFILE_TOK;
 	// process the input source file to completion, and recursively descend into any included files
-	cpp_parse(&inf, lfile_strs, &lstrs_len);
-	free (lnum_buf);
+	cpp_parse(&inf, lfile_strs, &lstrs_len, fname);
 
-	post_cpp();
-	// two buffers get handed to the next pass -- the tokenizer will have to rearrange them in memory
-	line_nums = olnums;
-	lnum_cnt = ol_cnt;
-	name_strings = lfile_strs;
-	namestr_len = lstrs_len;
+	// two buffers get handed to the next pass -- the emit buffer, and the lfile_strs buffer (renamed to name_strings)
+	*(emit_ptr++) = TOK_ILLEGAL;		// (must increment the pointer to calculate the correct total buffer length)
+	wrksp_top = wrksp + wrk_rem;
+	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
+	{
+		handle_emit_overflow();			// dump the tail end
+		close (outfd);
+		outfd = -1;
+		outf_exists = 1;	// set a flag for the next pass, to let it know there is an input file
+// HIHI!! flip the iof_in_toggle? Or should I delete the old input file and rename this one back to the input filename??
+	}
+	else
+	{
+		// all the emitted data managed to fit into memory
+		i = emit_ptr - emit_base;			// total size of preprocessor output
+		wrksp_top -= i;						// copy it all up to end at wrksp + wrk_rem
+		memmove (wrksp_top, emit_base, i);
+		emit_base = wrksp_top;
+	}
+	name_strings = wrksp_top - lstrs_len;
+	wrksp_top = name_strings;
+	memmove (name_strings, lfile_strs, lstrs_len);
 
 	return 0;
 }

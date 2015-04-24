@@ -67,6 +67,7 @@
 #define TOK_TYPESPEC_START		TOK_BOOL_T			// all typespecs must be together
 #define TOK_TYPESPEC_END		TOK_QWORD_T
 #define TOK_SIZEOF		59
+#define NUM_PP_TOKENS	TOK_SIZEOF
 // only the above tokens are used in the preprocessor
 #define TOK_OFFSET		60
 #define TOK_COUNT		61
@@ -103,13 +104,12 @@
 #define TOK_WHILE		87
 
 // HIHI whem I'm certain that this is all of them, pack these final tokens down with the others
+// -- definitely need a few more operators though -- addressof, deref, others???
 #define TOK_FUNCT_PTR	121
 #define TOK_NONAME_IDX	122			// for structs etc., where the name is left blank
 #define TOK_NAME_IDX	123			// for strings, types, names, etc.
 #define TOK_INT_CONST	124			// integer constant
 #define TOK_FP_CONST	125			// floating point constant
-#define TOK_NL			126			// single newline -- to count line numbers, for display only
-#define TOK_RLL_NL		127			// run of newlines (followed by the run length count - 3)
 
 static const char *keywords [] =
 {

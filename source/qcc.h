@@ -13,21 +13,19 @@
 #include <stdio.h>
 #include <time.h>
 
-#ifndef WIN32
+#ifndef _WIN32
 #include <stdint.h>
-// #include <sys/time.h>	-- this was copied from TCC, but it doesn't exist in musl! -- if GCC needs it, then it needs its own ifdef?
-//#include <sys/mman.h>
 #endif
 
 
 
 
-// HIHI!! many of these tccg things are single bits -- put those into a single flag_bits with masks?
+// HIHI!! all of these tccg things are single bits? -- put them into a single flag_bits with defined bitmasks?
 // uint8_t host_bigendian;
 int tccg_warn_unsupported, tccg_warn_write_strings, tccg_warn_error, tccg_warn_implicit_function_declaration;
 int tccg_char_is_unsigned, tccg_nocommon, tccg_leading_underscore, tccg_verbose;
 
-// HIHI!! are these 6 also single bit flags that should be in qccg_flag_bits?
+// HIHI!! more single bit flags?
 int multiple_files;
 int print_search_dirs;
 int reloc_output;
@@ -50,13 +48,13 @@ int do_bench = 0;
 uint8_t *wrksp, *wrksp_top, *name_strings, host_bigendian, *emit_base, *emit_ptr;
 uint8_t stoppers[128], prep_src[128], prep_ops[256], alnum_[256], c_ops[256], whtsp_lkup[128];
 int8_t hex_lkup[256], hexout[16];
-uint32_t wrk_size, wrk_rem, namestr_len, nxt_pass_info[4], *line_nums, *olnums;
+uint32_t wrk_size, wrk_rem, namestr_len, nxt_pass_info[5], *line_nums;			// , *olnums;
 uint16_t total_errs, total_warns, max_names_per_hash;
 
 
-int32_t da_entry_count[7], da_tot_entrylen[7], lnum_cnt, ol_cnt, num_toks;
-uint8_t *da_buffers[7];
-char *outfile;			// , *cur_fname;
+int32_t da_entry_count[7], da_tot_entrylen[7], ol_cnt, num_toks, lnum_cnt;
+uint8_t *da_buffers[7], *cur_fname;
+char *outfile;
 
 uint64_t *cint_tbl;			// array for storage of all constant integer values
 uint64_t *cman_tbl;			// storage for all constant floating mantissas
@@ -75,7 +73,6 @@ int infd, outfd;
 // Benchmark info
 int32_t total_lines;
 int32_t total_bytes;
-// int32_t tok_ident;				// HIHI!! is this a total token count? (including operators & keywords, I think?) -- I already have num_toks.
 
 // small arrays for implementing the buffer copyup function (major_copyup)
 void *base_ptrs[8], *cur_usage[8];
@@ -164,15 +161,11 @@ uint8_t m1cstr[4] = "-1";		// string for default defines
 #define PP_STRING_CNT		1			// total count of alphanumeric strings
 #define PP_BIG_NUMS			2			// total count of numeric constants with "big" values
 #define PP_NUM_CNT			3			// total count of numeric constants
+#define PP_LINE_CNT			4			// total count of compressed line numbers
 
 // -- and in the tokenizer
 #define TK_MAX_DEFLEN		0			// longest length of typedef, struct, union, or enum seen
 #define TK_CUR_DEFLEN		1			// length of current typedef, struct, union, or enum
-
-
-struct Sym {
-	uint32_t blah;			// HIHI!! getting rid of this? Is it how I'll be keeping track of types, register numbers, etc?
-};
 
 
 

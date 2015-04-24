@@ -55,7 +55,7 @@ void parse_typedef(uint32_t totlen, struct proto_info *inf)
 	// first, find the "newtype" name within the two possible formats -- scan backwards from end
 	// if the previous character before the end was a close paren, it's a function pointer typedef
 	p = end - 1;
-	while (*p == TOK_NL || *p == TOK_RLL_NL) --p;
+//	while (*p == TOK_NL || *p == TOK_RLL_NL) --p;
 	level = 0;
 	if (*p == TOK_C_PAREN)
 	{

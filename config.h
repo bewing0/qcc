@@ -33,11 +33,7 @@ typedef unsigned long		uint32_t;
 typedef signed __int64		int64_t;
 typedef unsigned __int64	uint64_t;
 #endif
-// also need a known typedef for 80 bit floats
-typedef long double			ldbl_t;
 
-// also need widechars?
-typedef unsigned short		qcc_wchar;
 
 // this is a list of directories, ending in /, 0-separated, containing system include files <*.h>
 // -- maybe it would be nicer to have this in a .rc file or something, but for now this is convenient as a kludge
