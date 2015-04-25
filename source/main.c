@@ -58,12 +58,11 @@ int tcc_set_warning(char *warning_name, int value)
 
 // how_far indicates the amount of data to show from *r
 // 0 = show one byte, 1 = show one "word", -1 = show two "words"
-void show_error(int level, char *str1, char *r, int how_far)			// HIHI!!!! modify this to accept a filename and line number
+void show_error(int level, char *str1, char *r, int how_far)			// HIHI!!!! modify this to accept a line number
 {
 	char *p;
 	int len;
-// HIHI!! get current offset from bof, scan forward through line_nums to find that offset (and the last fname before that) -- so I need a current pointer
-// HIHI!! dump filename (cur_fname) and line number  -- if line_nums is NULL, say "command line"
+// HIHI!! dump filename (cur_fname) and line number  -- if some flag is set, say "command line" (instead of fname and linnum)
 	if (level == 0)
 	{
 		write (2, "Error: ", 7);
@@ -72,7 +71,7 @@ void show_error(int level, char *str1, char *r, int how_far)			// HIHI!!!! modif
 	else if (level > 0)
 	{
 		write (2, "Warning: ", 9);
-		if (line_nums != NULL) ++total_warns;
+		if (line_nums != NULL) ++total_warns;		// HIHI this test is wrong now
 	}
 // else write (??, "info: ", 6); ?? -- If I send it to a non-2 fd, I have to do it *everywhere*
 	write (2, str1, strlen(str1));
@@ -486,10 +485,12 @@ void bench(int64_t t)
 int main(int argc, char *argv[])
 {
 	char *p;
+	int r;
 	int64_t t;
 	t = microseconds();
 
 	// parse argv[0] to determine how qcc was called -- ie. to decide what the user wants it to do
+	// HIHI -- should use something like tcc_basename(argv[0]), of course
 	p = argv[0];
 	while (*p != 0) ++p;		// scan to the end of the string
 // look at the preceding chars (discard extensions, find the executable name?)
@@ -501,18 +502,18 @@ int main(int argc, char *argv[])
 
 	do_global_defines();
 
-	dynarray_add(INCLUDE_PATHS, "", 1);		// need one extra NUL char on the end of the include path strings
+	dynarray_add(INCLUDE_PATHS, (uint8_t *) "", 1);		// need one extra NUL char on the end of the include path strings
 	pack_da_bufs();
 
+	r = 0;
 	// XXX: the various possibilities for calling are: strip, as, ld, cc, qcc, ??
 	// XXX: should compilation be the default, if the program name has been modified and does not give enough of a clue?
 	// was it called as 'qcc' -- to do compilations?
 //	if (*p == 'q' && p[1] == 'c' && p[2] == 'c')
 	if (*p == 'e' && p[1] == 'w' && p[2] == 'c')
-		return compile ();
+		r = compile ();
 
-//    if (benchmark != 0) bench(t);
-//	bench(t);
-	return 0;
+//	if (do_bench != 0) bench(t);
+	return r;
 }
 

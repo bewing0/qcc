@@ -14,15 +14,14 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 {
 	int32_t i, j, k;
 	uint32_t *handle_tbl;
-//	if (max_names_per_hash * 1024 + namestr_len + len + MAX_STRBUF_SIZE > the int storage array??)
-//		do a major_copyup()
+	major_copyup (len, 0);			// check whether memory needs rearranging
 
 	// tentatively copy the name into the string table
 	alt_strncpy(name_strings + namestr_len, name, len);
 
 	// find the insertion point in the token list -- verify whether it's a duplicate
-	handle_tbl = (uint32_t *) wrksp;
-	i = get_name_idx(hash, &name, len, 1);
+	handle_tbl = line_nums + lnum_cnt;
+	i = get_name_idx(hash, &name, len, 1, handle_tbl);
 
 	if (i < 0)										// got a match -- name is already defined
 		return handle_tbl[-i - 1] >> TOK_STROFF_SHFT;
@@ -35,7 +34,7 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 		while (handle_tbl[j] != 0) ++j;		// j = the current END of the column
 		if ((j & k) == k)					// time to expand the handle table?
 		{
-//			double_handle_table_size();		-- XXX: must make this routine more generic, so it can copyup a generic list of arrays
+			double_handle_table_size((uint8_t *) handle_tbl);
 			// recalculate i, j, and k with the new nph value
 			j = hash * max_names_per_hash + (j & k);
 			i = hash * max_names_per_hash + (i & k);
@@ -63,16 +62,26 @@ void tok_pass()
 	uint8_t *p, *c, *sp;
 	int8_t level, def_flg;
 	int32_t i;
-	uint32_t j;
+	uint32_t j, wb_offset, ln_idx;
 	uint64_t ll;
 	double d;		// HIHI!! removing this later
 
 	nxt_pass_info[TK_MAX_DEFLEN] = 0;
 	level = def_flg = 0;		// "currently defining a structure" flag
+	wb_offset = ln_idx = 0;
 	p = wrksp_top;
 	sp = p;						// eliminate a compiler warning
 	while (1)
 	{
+		// update the entries in the line_nums buffer to point to the emit buffer instead of the input
+		while (1)
+		{
+			if ((line_nums[ln_idx] & 0xff) == 0) ;
+			else if ((line_nums[ln_idx] >> 8) <= p - wrksp_top + wb_offset)
+				line_nums[ln_idx] = (line_nums[ln_idx] & 0xff) | ((emit_ptr - emit_base) << 8);
+			else break;
+			++ln_idx;
+		}
 		switch (*p)
 		{
 		case ESCCHAR_TOK:
@@ -82,14 +91,13 @@ void tok_pass()
 				sp = emit_ptr;										// save a ptr to starts of defs
 				nxt_pass_info[TK_CUR_DEFLEN] = 0;
 			}
-			if (*p == TOK_TYPEDEF && level == 0) def_flg = 2;		// parse a global typedef to the semicolon
+			if (*p == TOK_TYPEDEF && level == 0) def_flg = 2;		// look for a global typedef
 			// parse for anonymous struct, union, and enum tokens
 			if (*p == TOK_STRUCT || *p == TOK_UNION || *p == TOK_ENUM)
 			{
-				if (def_flg == 0 && level == 0) def_flg = -1;		// potentially start looking for a global "struct" definition
+				if (def_flg == 0 && level == 0) def_flg = -1;		// look for a global "struct" definition
 				*(emit_ptr++) = *(p++);
 				// the current byte must be either the beginning of a name, or an open curly bracket?
-// HIHI!! oh crap -- there is also newline whitespace to deal with! Use a next_tok() function? But it may have to read more!
 				if (alnum_[*p] == 0)
 				{
 					*(emit_ptr++) = TOK_NONAME_IDX;
@@ -121,7 +129,6 @@ void tok_pass()
 		case '4':	case '5':
 		case '6':	case '7':
 		case '8':	case '9':
-	// HIHI!! what about an escaped \n in the middle of a number? And if that works, if there is an error, which line is it on?
 			i = num_parse(p, &p, &ll, &d, &cman_tbl[flt_cnt], &cexp_tbl[flt_cnt]);
 			if (i == 0)
 			{
@@ -248,7 +255,7 @@ def_term:
 void pre_tokenize()
 {
 	uint32_t i, j, k;
-	uint8_t *p, *c, *pb;
+	uint8_t *p, *c;
 	// the input data is either in a file, or stored between wrksp_top and wrk_rem
 	infd = -1;
 	if (outf_exists != 0)
@@ -263,14 +270,17 @@ void pre_tokenize()
 		outfd = -1;
 	}
 
-	// HIHI need to do a small calculation to figure out how much spare room there is for extra linbufs
+	// HIHI need to do a small calculation to figure out how much spare room there is for extra line_nums
 	lnum_cnt = 0;
 	i = nxt_pass_info[PP_LINE_CNT];
 	line_nums = (uint32_t *) wrksp;
-	p = pb = emit_base;
+	p = emit_base;
 	emit_base = (uint8_t *) (line_nums + i + 2048);
 	emit_ptr = emit_base;
-
+	// line_nums format: 24 bit offset << 8 | linecount (max 255)
+	// usually the offset is into the input bytestream (linecount newlines go *before* the specified input byte)
+	// if linecount is 0, then the offset is into name_strings (of a linecount directive)
+	// and there is sometimes a second line_nums array being constructed (olnums), with an offset into the emit buffer
 	i = 0;							// current offset in the name_strings buffer
 	while (1)
 	{
@@ -281,6 +291,8 @@ void pre_tokenize()
 			line_nums[lnum_cnt++] = i << 8;
 			++p;
 			i = 1 + c - name_strings;		// get the index of the NEXT filename
+	// HIHI!! if lnum_cnt goes too high, I need another pair of files to dump the array to
+	// -- just have ONE filename, and a length, and modify filename[length] with the inout toggle?
 		}
 		else if (*p == '\n')
 		{
@@ -292,7 +304,7 @@ void pre_tokenize()
 				k = j;
 				if (k > 255) k = 255;
 				j -= k;
-				line_nums[lnum_cnt++] = k | ((p - pb) << 8);
+				line_nums[lnum_cnt++] = k | ((emit_ptr - emit_base) << 8);
 			}
 		}
 		else if (*p == TOK_ILLEGAL)
@@ -316,13 +328,11 @@ void pre_tokenize()
 //		if (??) handle_emit_overflow();		HIHI!!
 	}
 	*(emit_ptr++) = TOK_ENDOFBUF;
-	// data was *removed* from the emit buffer, so it should be smaller now, and fit back in its former space
+	// data was *removed* from the emit buffer, so it should always be smaller now, and fit back in its former space
 	k = emit_ptr - emit_base;
 	p = emit_base;
 	emit_base = wrksp + wrk_rem - k;
 	memmove (emit_base, p, k);
-	// verify that all of linefile was used up -- HIHI
-	j = i - namestr_len;
 	wrksp_top = emit_base;
 }
 
@@ -375,7 +385,8 @@ void finalize_tok()
 // load tokenized code into upper half of workspace -- delete any processed tempfile
 void tokenize()
 {
-	int32_t j, wrk_avail;
+	int32_t j, wrk_avail, numnums;
+	uint8_t *p;
 
 	pre_tokenize();
 	// the input data is either in a file, or stored between wrksp_top and wrk_rem
@@ -388,12 +399,12 @@ void tokenize()
 //		infd = qcc_open_r(inout_fnames[??], 1);
 		j = qcc_read(infd, (char *) wrksp_top, 30 * 1024);
 		wrksp_top[j] = TOK_ENDOFBUF;
-		// since there was enough data to overflow into a file, leave half the workspace open for tokens
+		// since there was enough data to overflow into a file, leave half the workspace for arrays
 		wrk_avail = (wrk_rem - 30 * 1024) / 2;
 		outf_exists = 0;							// reset the flag for this next pass
 		outfd = -1;
 	}
-	else wrk_avail = (wrksp_top - wrksp) - 0x10000;			// 64K below the cpp output
+	else wrk_avail = wrksp_top - wrksp;				// overwrite the current input stream with output
 	emit_base = wrksp + wrk_avail;
 	emit_ptr = emit_base;
 
@@ -401,50 +412,63 @@ void tokenize()
 	// floating mantissas, floating exponents, an "output lnums array", and an "index" array to keep track of everything
 	// -- the preprocessor passed on a few numbers to estimate max allocations
 
-	// HIHI!! the following calculation needs modding for the 2 new arrays -- line_nums is already in place at the bottom of wrksp
+	// allocate space for the lnums
+	wrk_avail -= lnum_cnt * 4;
 	// total number of alphanumeric strings can be used to calculate the size of the hashed handle table
 	j = 2048;
 	while (j / 2 < (int32_t) nxt_pass_info[PP_STRING_CNT] && j < wrk_avail / 8) j *= 2;
 	max_names_per_hash = (uint16_t) (j / 1024);
 	wrk_avail -= j;
 
-	// init the name hashes in the list to "unused"
-	memset (wrksp, 0, j);
+	// init the name hashes in the list to "unused" -- HIHI!! save this ptr, I guess
+	// note: the arrays *must* remain 8b aligned
+	p = (uint8_t *)(line_nums + ((lnum_cnt + 1) & ~1));
+	memset (p, 0, j);
 
 	// the raw name strings begin just above the name hash list (growing up)
-	name_strings = wrksp + j;
-	namestr_len = 0;
-	j = (nxt_pass_info[PP_ALNUM_SIZE] + 1023) & ~1023;			// assume 1K more than suggested
-	if (j > wrk_avail / 4) j = wrk_avail / 4;
+	p += j;
+	memmove (p, name_strings, namestr_len);					// copy the existing name strings down
+	name_strings = p;
+	j = (nxt_pass_info[PP_ALNUM_SIZE] + namestr_len + 1023) & ~1023;		// assume 1K more than suggested
+	if (j > wrk_avail / 4) j = ((wrk_avail / 4) + 7) & ~7;					// insist on a multiple of 8
 	wrk_avail -= j;
 
 	cint_tbl = (uint64_t *) (name_strings + j);
 	j = (nxt_pass_info[PP_BIG_NUMS] + 255) & ~255;			// each potential number is getting 18 bytes of storage
-	if (j * 16 > wrk_avail / 2) j = wrk_avail / 2;
-	cman_tbl = cint_tbl + j;
-	cexp_tbl = (uint16_t *) (cman_tbl + j);
+	if (j * 16 > wrk_avail / 2) j = ((wrk_avail / 2) + 7) & ~7;
+	numnums = j;
+	cman_tbl = cint_tbl + numnums;
+	cexp_tbl = (uint16_t *) (cman_tbl + numnums);
 	wrk_avail -= j * 18;
 
 	// Max size is the sum of # of strings and total # of numbers.
-	idx_tbl = (uint32_t *) (cexp_tbl + j);
-//	j = (nxt_pass_info[1] + nxt_pass_info[PP_NUM_CNT]) * 4;
-//	wrk_avail -= j;
+	idx_tbl = (uint32_t *) (cexp_tbl + numnums);
+	j = nxt_pass_info[1] + nxt_pass_info[PP_NUM_CNT];
+//	wrk_avail -= j * 4;
+// so IF there is an open input file, then move the emit pointer to idx_tbl + j -- otherwise, it's fine where it is
+	p = wrksp + wrk_rem;			// a pointer to the very top
 
 	// then enter all these base pointers and lengths into the copyup control arrays
-/*	*base_ptrs = name_strings;
+	*base_ptrs = &name_strings;
 	*cur_usage = &namestr_len;
 	*tshft = 0;
-	base_ptrs[1] = lfile_strs;
-	cur_usage[1] = &lstrs_len;
-	tshft[1] = 0;
-	base_ptrs[2] = emit_base;
-	cur_usage[2] = &emit_ptr;
-	tshft[2] = 0x90;				// flag that emit_ptr is a ptr (not a length) and to use special overflow handler #1
-	base_ptrs[3] = olnums;
-	cur_usage[3] = &ol_cnt;
-	tshft[3] = 0x22;				// use special overflow handler #2
-	base_ptrs[4] = wrksp_top;
-	cur_usage[4] = NULL;		*/
+	base_ptrs[1] = &cint_tbl;
+	cur_usage[1] = &numnums;
+	tshft[1] = 3;
+	base_ptrs[2] = &cman_tbl;
+	cur_usage[2] = &numnums;
+	tshft[2] = 3;
+	base_ptrs[3] = &cexp_tbl;
+	cur_usage[3] = &numnums;
+	tshft[3] = 1;
+	base_ptrs[4] = &idx_tbl;
+	cur_usage[4] = &j;
+	tshft[4] = 1;
+	base_ptrs[5] = &emit_base;
+	cur_usage[5] = &emit_ptr;
+	tshft[5] = 0x90;				// flag that emit_ptr is a ptr (not a length) and to use special overflow handler #1
+	base_ptrs[6] = &p;
+	cur_usage[6] = NULL;
 
 
 	idxidx = 0;

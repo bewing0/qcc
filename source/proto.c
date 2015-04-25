@@ -87,7 +87,7 @@ void parse_typedef(uint32_t totlen, struct proto_info *inf)
 	if (detect_c_keyword(name_ptr, namelen) != 0) goto td_syntax_err;
 	hsh_val = hash(name_ptr, (int) namelen);
 	sp = name_ptr;
-	if (get_name_idx(hsh_val, &sp, namelen, 0) < 0) goto td_syntax_err;
+	if (get_name_idx(hsh_val, &sp, namelen, 0, (uint32_t *) wrksp) < 0) goto td_syntax_err;
 
 	// for function pointer typedefs, store a function pointer token + all the prototype BS as the "definition"
 	if (i != 0)
@@ -261,7 +261,7 @@ void post_proto()
 }
 
 
-// process funct prototypes, typedefs, structs, unions, and enums
+// process global funct prototypes, typedefs, struct, union, and enum definitions
 void prototypes()
 {
 	uint32_t j, wrk_avail;
@@ -286,8 +286,8 @@ void prototypes()
 	emit_base = wrksp + wrk_avail;
 	emit_ptr = emit_base;
 
-	inf.defs_idx = (uint32_t *) wrksp;
-	inf.defs = wrksp + idxidx * 4;
+	inf.defs_idx = line_nums + lnum_cnt;			// put the defs index table just above line_nums
+	inf.defs = wrksp + idxidx * 4;					// maximum possible size is the old idxidx size
 	j = proto_pass(&inf);
 
 	if (inf.wb_flag != 0) free (inf.wrkbuf);

@@ -50,6 +50,13 @@
 // later:
 // sizeof() needs to be able to recognize a function pointer
 // function pointer prototype info from typedefs
+//- unsupported assembly directives: .rept, .endr, .subsection
+//- '#define __ASSEMBLY__' needed in assembly sources
+//- static variables cannot be seen from the inline assembly code
+//- typing/lvalue problems with '? :'
+//- no long long bit fields
+//- 'aligned' attribute not supported for whole structs, only for fields
+//- obscure preprocessor bug
 
 #include "qcc.h"
 

@@ -701,6 +701,7 @@ uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_i
 	memset (off, 0, 512);
 
 	// find the unescaped EOL and limit the first loop to that single line
+// HIHI!!! combine this loop with the next one -- doing both is silly!
 	sp = p;
 	while (*sp != '\n' && *sp != 0) ++sp;
 	j = MAX_MACRO_STRING;
@@ -750,7 +751,7 @@ uint32_t parse_fn_macro_inputs(uint8_t *p, uint8_t argcnt, struct pp_recursion_i
 
 // this routine expands the table that lives at the bottom of memory --
 // expanding it will cause a cascade effect, moving up one or more of the tables above it
-void double_handle_table_size()
+void double_handle_table_size(uint8_t *hashtbl_base)
 {
 	int32_t i;
 	uint32_t j, k;
@@ -764,11 +765,11 @@ void double_handle_table_size()
 	{
 		j = k * i;								// old offset to handle entries for this hash
 		// double their old offset, into the first half of the expanded array
-		memmove (wrksp + j * 2, wrksp + j, k);		// note: alt_memmove might be nice
+		memmove (hashtbl_base + j * 2, hashtbl_base + j, k);		// note: alt_memmove might be nice
 		// must zero out the top half of each expanded array
-		memset (wrksp + (j * 2) + k, 0, k);
+		memset (hashtbl_base + (j * 2) + k, 0, k);
 	}
-	memset (wrksp + k, 0, k);					// the new top half of array 0 must also be cleared
+	memset (hashtbl_base + k, 0, k);			// the new top half of array 0 must also be cleared
 	// double the nph value
 	max_names_per_hash *= 2;
 }
@@ -795,17 +796,14 @@ void delete_name_hash(int32_t idx)
 // locating a name index in the table -- either for lookup, or for insertion
 // Notes: lookups and insertions are *opposites* -- an insertion should FAIL on a match
 // if insert_flag is 0 (doing a successful lookup) symname is updated to point at the definition string
-int32_t get_name_idx(uint8_t hashval, uint8_t **symname, int32_t len, int insert_flag)
+int32_t get_name_idx(uint8_t hashval, uint8_t **symname, int32_t len, int insert_flag, uint32_t *nametbl)
 {
 	int32_t i, j, k;
-	uint32_t *nametbl;
 	uint8_t *p, *c;
 	// find the insertion point in the name list -- verify whether it's a duplicate
 	j = max_names_per_hash;
 	i = j * hashval;
-	// within this hash value, names are sorted by length
-	nametbl = (uint32_t *) wrksp;
-	// loop on finding the insertion point
+	// within this hash value, names are sorted by length -- loop on finding the insertion point
 	while (j > 0 && nametbl[i] != 0)
 	{
 		k = (uint8_t) nametbl[i];
@@ -858,7 +856,7 @@ void pp_build_name(uint8_t *mname, uint8_t *p, uint8_t hash, int32_t len, struct
 
 	// find the insertion point in the hash list -- verify whether it's a duplicate
 	handle_tbl = (uint32_t *) wrksp;
-	i = get_name_idx(hash, &s, len, 1);
+	i = get_name_idx(hash, &s, len, 1, handle_tbl);
 
 	if (i < 0)					// got a potentially illegal match -- name is already defined
 	{
@@ -875,7 +873,7 @@ void pp_build_name(uint8_t *mname, uint8_t *p, uint8_t hash, int32_t len, struct
 		while (handle_tbl[j] != 0) ++j;		// j = the current END of the column
 		if ((j & k) == k)					// time to expand the handle table?
 		{
-			double_handle_table_size();
+			double_handle_table_size(wrksp);
 			// recalculate i, j, and k with the new nph value
 			j = hash * max_names_per_hash + (j & k);
 			i = hash * max_names_per_hash + (i & k);
@@ -1063,7 +1061,7 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 								++s1;
 							}
 							h = hash (s, (int) j);
-							j = get_name_idx (h, &s, j, 0);
+							j = get_name_idx (h, &s, j, 0, (uint32_t *) wrksp);
 							if (j < 0)			// was the macro found?
 							{
 								*(d++) = '-';	// defined() is true
@@ -1080,7 +1078,7 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 					else
 					{
 						h = hash (s, (int) j);
-						j = get_name_idx (h, &s, j, 0);
+						j = get_name_idx (h, &s, j, 0, (uint32_t *) wrksp);
 						if (j < 0)			// was the macro found?
 						{
 							while (*s != 0) *(d++) = *(s++);
@@ -1176,7 +1174,7 @@ int32_t name_lookup(uint8_t *p, struct pp_recursion_info *inf)
 	i = 0;						// create a token out of the defined name
 	while (alnum_[*p] != 0) ++p, ++i;
 	// look it up in the token list -- a match returns a NEGATIVE index!
-	return get_name_idx(hash (c, i), &c, i, 0);
+	return get_name_idx(hash (c, i), &c, i, 0, (uint32_t *) wrksp);
 }
 
 
@@ -1307,7 +1305,7 @@ bypass_done:
 					c = lfile_strs + *lstrs_len;
 					i = 8;
 					k = pinfo->line_num;
-					while (--i >= 0) *(c++)= hexout[k >> (i * 4)];
+					while (--i >= 0) *(c++)= hexout[(k >> (i * 4)) & 0xf];
 					*lstrs_len += 8 + alt_strcpy (c, fname) + 1;
 					*(emit_ptr++) = LFILE_TOK;
 					cur_fname = fname;			// only used by show_error
@@ -1593,7 +1591,7 @@ bad_3_:
 			if (i == 0)
 			{
 				hsh_val = hash(c, (int) j);
-				i = get_name_idx(hsh_val, &c, j, 0);
+				i = get_name_idx(hsh_val, &c, j, 0, (uint32_t *) wrksp);
 				if (i < 0)							// is it a known macro?
 				{
 					emit_ptr = sp;					// remove the raw text from the output buffer
@@ -1744,6 +1742,7 @@ int preprocess(int fd, uint8_t *fname)
 	memmove (wrksp_top - i, da_buffers[PREDEFINES], i);
 	memset (nxt_pass_info, 0, 20);
 	outfd = -1;
+num_toks = 1;			// HIHI!!!! debugging!
 
 	alt_strncpy (lfile_strs, (uint8_t *) "00000001", 8);						// must pre-emit the first LINEFILE for the input file
 	lstrs_len = 8 + alt_strcpy (lfile_strs + 8, (uint8_t *) fname) + 1;			// include the NUL on the filename
@@ -1771,8 +1770,60 @@ int preprocess(int fd, uint8_t *fname)
 		emit_base = wrksp_top;
 	}
 	name_strings = wrksp_top - lstrs_len;
-	wrksp_top = name_strings;
 	memmove (name_strings, lfile_strs, lstrs_len);
+	namestr_len = lstrs_len;
 
 	return 0;
+}
+
+
+void dump_cpp_output()
+{
+	FILE *out;
+	uint8_t *p, in_str;
+	char *c;
+	// create outfile for writing as a text file
+	out = fopen (outfile, "w");
+	// XXX: for now, ignore the case where the emit buffer has been written to disk
+	p = emit_base;
+	in_str = 0;
+	while (1)
+	{
+		if (*p == ESCCHAR_LE7F)
+		{
+			if (in_str == 0) putc ('\'', out);
+			// emit \x (*++p & 0x7f) as hex
+			putc ('\\', out);
+			putc ('x', out);
+			putc (hexout[(*++p >> 4) & 7], out);
+			putc (hexout[*p & 0xf], out);
+			if (in_str == 0) putc ('\'', out);
+		}
+		else if (*p == ESCCHAR_GT7F)
+		{
+			if (in_str == 0) putc ('\'', out);
+			// emit \x *++p as hex
+			putc ('\\', out);
+			putc ('x', out);
+			putc (hexout[*++p >> 4], out);
+			putc (hexout[*p & 0xf], out);
+			if (in_str == 0) putc ('\'', out);
+		}
+		else if (*p == '"')
+		{
+			in_str ^= 1;
+			putc (*p, out);
+		}
+		else if (*p == ESCCHAR_TOK)			// turn tokenized keywords back into text
+		{
+			c = (char *) keywords[*++p - KEYWORDS_OFF];
+			fwrite (c, strlen (c), 1, out);
+			putc (' ', out);
+		}
+		else if (*p == LFILE_TOK) ;			// linefile tokens get discarded
+		else if (*p == TOK_ILLEGAL) break;	// EOF, for now, until this routine gets expanded to handle reading
+		else putc (*p, out);				// any other byte gets dumped as-is
+		++p;
+	}
+	fclose (out);
 }
