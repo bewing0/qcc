@@ -16,7 +16,7 @@ int tokenize_op(uint8_t *s, uint8_t *d, int prep_flg);
 int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, double *ldp, int32_t ldblcnt);
 uint8_t detect_c_keyword(uint8_t *name, uint32_t len);
 void show_error(int level, char *str1, char *r, int how_far);
-void handle_emit_overflow();
+void handle_emit_overflow(uint32_t *i);
 void major_copyup(uint32_t added, int depth);
 
 // special preprocessor byte "tokens" -- but they aren't really tokens
@@ -1191,7 +1191,7 @@ void cpp_parse(struct pp_recursion_info *pinfo, uint8_t *lfile_strs, uint32_t *l
 	// allocation size of the workspace. It is a user-modifiable value in config.h.
 	if (pinfo->depth > MAX_NESTED_INCLUDES)
 	{
-		if (pinfo->fd > 0) close (pinfo->fd);
+		if (pinfo->fd > 0) qcc_close (pinfo->fd);
 		pinfo->fd= -1;
 		return;
 	}
@@ -1564,7 +1564,7 @@ bad_3_:
 					break;
 				}
 				// note: do not discard after handling these macros -- they are in the middles of strings!
-				if (p - emit_ptr < 0x10000) handle_emit_overflow();
+				if (p - emit_ptr < 0x10000) handle_emit_overflow(NULL);
 			}
 			// if it wasn't a preprocessor directive, fall through into the alphanumeric case
 
@@ -1652,7 +1652,7 @@ bad_3_:
 		}		// end of switch on *p
 
 		// verify that emit_ptr isn't close to overflowing (soft 64k limit)
-		if (p - emit_ptr < 0x10000) handle_emit_overflow();
+		if (p - emit_ptr < 0x10000) handle_emit_overflow(NULL);
 
 		// make sure there is always at least 16K in the input buffer, unless the file is closed
 		// -- that way, running into the EOB is always just an error
@@ -1742,7 +1742,6 @@ int preprocess(int fd, uint8_t *fname)
 	memmove (wrksp_top - i, da_buffers[PREDEFINES], i);
 	memset (nxt_pass_info, 0, 20);
 	outfd = -1;
-num_toks = 1;			// HIHI!!!! debugging!
 
 	alt_strncpy (lfile_strs, (uint8_t *) "00000001", 8);						// must pre-emit the first LINEFILE for the input file
 	lstrs_len = 8 + alt_strcpy (lfile_strs + 8, (uint8_t *) fname) + 1;			// include the NUL on the filename
@@ -1755,24 +1754,34 @@ num_toks = 1;			// HIHI!!!! debugging!
 	wrksp_top = wrksp + wrk_rem;
 	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
 	{
-		handle_emit_overflow();			// dump the tail end
-		close (outfd);
+		handle_emit_overflow(NULL);			// dump the tail end
+		qcc_close (outfd);
 		outfd = -1;
 		outf_exists = 1;	// set a flag for the next pass, to let it know there is an input file
-// HIHI!! flip the iof_in_toggle? Or should I delete the old input file and rename this one back to the input filename??
+// HIHI!! flip the iof_in_toggle
+		emit_ptr = emit_base = wrksp;
 	}
-	else
-	{
-		// all the emitted data managed to fit into memory
-		i = emit_ptr - emit_base;			// total size of preprocessor output
-		wrksp_top -= i;						// copy it all up to end at wrksp + wrk_rem
-		memmove (wrksp_top, emit_base, i);
-		emit_base = wrksp_top;
-	}
+
+	// name_strings must be stored ABOVE the emit buffer -- so there may be a little mem rearranging needed
+	i = emit_ptr - emit_base;						// total size of preprocessor output
 	name_strings = wrksp_top - lstrs_len;
-	memmove (name_strings, lfile_strs, lstrs_len);
+	if (name_strings < emit_ptr)					// will name_strings already fit above emit buf?
+	{
+		// will copying the emit buffer DOWN make enough room?
+		if (name_strings < emit_ptr - (emit_base - lfile_strs - lstrs_len))
+		{
+			// must move the lfile strings down before anything else can move -- but then it will work
+			memmove (wrksp, lfile_strs, lstrs_len);
+			lfile_strs = wrksp;
+		}
+		memmove (lfile_strs + lstrs_len, emit_base, i);			// pack the emit buffer down
+		emit_base = lfile_strs + lstrs_len;
+	}
+	memmove (name_strings, lfile_strs, lstrs_len);		// move the name strings up to the top of the workspace
 	namestr_len = lstrs_len;
 
+	wrksp_top = name_strings - i;						// move the emit buffer up to end at name_strings
+	memmove (wrksp_top, emit_base, i);
 	return 0;
 }
 
@@ -1785,7 +1794,7 @@ void dump_cpp_output()
 	// create outfile for writing as a text file
 	out = fopen (outfile, "w");
 	// XXX: for now, ignore the case where the emit buffer has been written to disk
-	p = emit_base;
+	p = wrksp_top;
 	in_str = 0;
 	while (1)
 	{

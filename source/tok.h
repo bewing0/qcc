@@ -105,12 +105,15 @@
 
 // HIHI whem I'm certain that this is all of them, pack these final tokens down with the others
 // -- definitely need a few more operators though -- addressof, deref, ellipsis, others???
-#define TOK_FUNCT_PTR	121
+#define TOK_FUNCT_PTR	119			// HIHI actually a function pointer must be a typespec -- need an extra token for the index
 // two more idx types? global variable declarations, and funct prototypes (separated from the names)?
+#define TOK_FUNCT_IDX	120			// function name index
+#define TOK_TYPEDEF_IDX	121
 #define TOK_NONAME_IDX	122			// for structs etc., where the name is left blank
 #define TOK_NAME_IDX	123			// for strings, types, names, etc.
 #define TOK_INT_CONST	124			// integer constant
 #define TOK_FP_CONST	125			// floating point constant
+#define FIRST_IDX_TOK	TOK_FUNCT_PTR
 
 static const char *keywords [] =
 {

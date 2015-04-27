@@ -6,13 +6,11 @@
 // size by a small but still noticeable amount, which makes the remaining code faster to parse.
 
 // This also provides an opportunity to automatically prototype every function in the sourcecode,
-// which means the programmer does not need to perform that task anymore.
+// which means the programmer does not need to perform that chore anymore.
 
 
 struct proto_info
 {
-	uint8_t *fname;
-	uint32_t line_num;
 	int infd;
 	uint32_t idx_strt;
 	uint32_t wb_flag;
@@ -25,97 +23,125 @@ struct proto_info
 };
 
 
+// HIHI these routines move into syntax.c, of course
+int synchk_vardef(uint8_t *c, int32_t len)
+{
+	// vardefs must be a typespec, modifier, typedef idx, or sae index? (or no op)
+	// in the proper order, with no repeats, and no logic conflicts
+	return 1;
+}
+
+
+int synchk_arglist(uint8_t *c, int32_t len)
+{
+	// possibilities are: vardef, name_idx, comma, (assign?), number_idx, square brackets, parens (I think), ellipsis, (or no op)
+	return 1;
+}
+
+
+int synchk_fn_decl(uint8_t *c, int32_t len)
+{
+	// possibilities are: typespecs, name_idx, fnp_idx, declspecs
+	return 1;
+}
+
+
+// HIHI!! it's not so good to pass strtidx as an arg -- there is already an idx_strt in inf -- but do I really want to do true recursions?
+void recurse_sue(uint8_t *p, int32_t strtidx)
+{
+	int32_t i;
+	i = 0;
+}
+
+
 // found a global typedef -- find its "name" (= NEWTYPE) and store it away properly
 // 2 possible formats -- standard: typedef knowntype *** NEWTYPE;
 // function pointer: typedef return_type (calling_conventions NEWTYPE)(prototype_arglist);
 // XXX: **one possible issue!!** -- in the function pointer format, if the return type is char **, exactly where do the stars go, according to the standard?
-// HIHI parse out both kinds of typedefs separately, with different tokens at the front?
 void parse_typedef(uint32_t totlen, struct proto_info *inf)
 {
-	uint8_t *p, *name_ptr, *beg, *end, hsh_val, *sp;
-	int32_t i, level, namelen;
+	uint8_t *p, *c;
+	int32_t i, nxtidx;
 
-	beg = inf->wrkbuf;
-	end = beg + totlen;
-	*end = TOK_ILLEGAL;
-	// scan forward and parse any struct/union/enum defs found
-	p = beg;
-	i = inf->idx_strt;
-	while (*p != TOK_ILLEGAL)
+	if (totlen < 4) show_error(0, "typedef syntax error", NULL, 1);
+	nxtidx = inf->idx_strt;
+	// "recursively" parse and remove any struct/union/enum subdefs within the typedef
+	p = inf->wrkbuf;
+	while (*p != TOK_SEMIC)
 	{
+		// count the number of idx tokens (of any type) in the definition
+		if (*++p >= FIRST_IDX_TOK) ++nxtidx;
 		if (*p == TOK_STRUCT || *p == TOK_UNION || *p == TOK_ENUM)
 		{
 			if (p[1] == TOK_NAME_IDX || p[1] == TOK_NONAME_IDX)
 			{
+				if (p[2] == TOK_OCURLY)
+					recurse_sue(p, nxtidx - 1);
 			}
 		}
-		++p;
 	}
 
-	// first, find the "newtype" name within the two possible formats -- scan backwards from end
+	// find the "newtype" name within the two possible formats -- scan backwards from the semicolon
 	// if the previous character before the end was a close paren, it's a function pointer typedef
-	p = end - 1;
-//	while (*p == TOK_NL || *p == TOK_RLL_NL) --p;
-	level = 0;
-	if (*p == TOK_C_PAREN)
+	if (*--p == TOK_C_PAREN)
 	{
-		// scan backwards through curly bracket pairs to find the matching open paren
-		while (*p != TOK_TYPEDEF && (*p != TOK_O_PAREN || level != 0))
+		i = 1;
+		// scan backwards through a prototype arglist to find the matching open paren
+		while (*p != TOK_TYPEDEF && *p != TOK_O_PAREN)
 		{
-			if (*p == TOK_OCURLY) ++level;
-			else if (*p == TOK_CCURLY)
-			{
-				if (--level < 0) goto td_syntax_err;
-			}
-			--p;
+			if (*--p >= FIRST_IDX_TOK) --nxtidx;
+			++i;
 		}
-		// the previous non-whitespace character before the open paren *must* be another close paren
-		while (*p == ' ') --p;
-		if (*p != ')') goto td_syntax_err;
-		// and the previous non-whitespace character before *that* must be "newtype"
-		--p;
-		while (*p == ' ') --p;
-		i = 1;		// set a flag that this is a function pointer typedef
+		// the prev token must be a close paren, and the previous token before *that* must be the "newtype" name_idx
+		if (*p != TOK_O_PAREN || p[-1] != TOK_C_PAREN || p[-2] != TOK_NAME_IDX || synchk_arglist(p, i) == 0)
+			show_error(0, "typedef syntax error", NULL, 1);
+// HIHI!! the string from p (length i) to the end should be stored somewhere else as the function prototype, indexed by the name
+		// start building a defidx entry -- it should point at the name (from idxidx)
+		i = idx_tbl[--nxtidx];
+		inf->defs_idx[inf->cur_didx++] = i;
+		// then scan backwards some more through the function declaration, to verify more syntax
+		p -= 2;
+		i = 0;
+		while (*p != TOK_TYPEDEF && *p != TOK_O_PAREN)
+		{
+			if (*--p >= FIRST_IDX_TOK) --nxtidx;
+			++i;
+		}
+		c = inf->wrkbuf;
+		i = p - c;		// get the distance back to beginning of def
+		if (*p != TOK_O_PAREN || synchk_fn_decl(p + 1, i))
+			show_error(0, "typedef syntax error", NULL, 1);
+		p = inf->curdef;
+		*(p++) = TOK_FUNCT_IDX;
+		// start at the beginning and verify the return type syntax
+		if (synchk_vardef(c, i) == 0) show_error(0, "typedef syntax error", NULL, 1);
+		i = totlen - 3;
 	}
-	// otherwise, p *must* be pointing at the end of the alphanumeric "newtype" name
-	else if (alnum_[*p] == 0) goto td_syntax_err;
-	namelen = 1;
-	while (alnum_[*--p] != 0) ++namelen;
-	name_ptr = p + 1;
-
-	// verify no conflicts with intrinsics or previous macro names
-	if (detect_c_keyword(name_ptr, namelen) != 0) goto td_syntax_err;
-	hsh_val = hash(name_ptr, (int) namelen);
-	sp = name_ptr;
-	if (get_name_idx(hsh_val, &sp, namelen, 0, (uint32_t *) wrksp) < 0) goto td_syntax_err;
-
-	// for function pointer typedefs, store a function pointer token + all the prototype BS as the "definition"
-	if (i != 0)
+	else if (*p != TOK_NAME_IDX)		// otherwise, p *must* be pointing at the "newtype" name index token
 	{
-		// use the emit_ptr area as a workspace -- a typedef does not emit any sourcecode
-		sp = emit_ptr;
-		*(sp++) = TOK_FUNCT_PTR;
-		i = p - beg;
-		while (--i >= 0) *(sp++) = *++beg;
-		*(sp++) = TOK_FUNCT_PTR;
-		p += namelen;
-		i = end - p;
-		while (--i >= 0) *(sp++) = *++p;
-		i = sp - emit_ptr;
-		sp = emit_ptr;
-	}
-	else		// for normal typedefs, just store from p down to the 0 (p - beg - 1)
-	{
-		sp = beg + 1;
-		i = p - beg;
-	}
-//	sp = build_name(name_ptr, sp, hsh_val, namelen, inf, i);
-	if (sp == NULL)			// HIHI!! what does build_name return on an error?
-	{
-td_syntax_err:
-		// HIHI!! I can have multiple error strings based on 'i'!
 		show_error(0, "typedef syntax error", NULL, 1);
+		return;
 	}
+	else						// build a defidx entry -- point it at the name (get it from idxidx)
+	{
+		i = idx_tbl[--nxtidx];
+		inf->defs_idx[inf->cur_didx++] = i;
+		p = inf->curdef;
+		*(p++) = TOK_TYPEDEF_IDX;
+		// copy all the rest of the bytes (totlen - 3 of them, starting at beg + 1) into def
+		i = totlen - 3;
+		c = inf->wrkbuf;
+		if (synchk_vardef(c, i) == 0) show_error(0, "typedef syntax error", NULL, 1);
+	}
+	while (--i >= 0)
+	{
+		if (*++c >= FIRST_IDX_TOK) --nxtidx;
+			inf->defs_idx[inf->cur_didx++] = idx_tbl[nxtidx++];
+		if (*c != TOK_NO_OP) *(p++) = *c;		// don't copy no ops
+	}
+	*(p++) = TOK_ILLEGAL;
+	inf->curdef = p;
+	memset (inf->wrkbuf, TOK_NO_OP, totlen);
 }
 
 
@@ -125,45 +151,28 @@ int32_t parse_proto(uint8_t **p, struct pass_info *inf, int depth)
 }
 
 
-void wrkbuf_alloc(uint8_t *sp, struct proto_info *inf)
-{
-// there are 3 scenarios for a workspace buffer in this pass -- because it can theoretically be very large
-// 1) the whole file is already in mem so I don't need one,
-// 2) there is enough space for it above the emit pointer,
-// 3) malloc it (the max size is stored in *nxt_pass_info)
-	if (inf->wb_flag != 0) return;						// check the flag for whether malloc has been called
-	if (inf->infd >= 0)
-	{
-		// calculate if (?? - emit_ptr > *nxt_pass_info)
-		//-- if not, inf->cur_ptr = (uint8_t *) malloc(*nxt_pass_info); inf->wb_flag = 1;
-		// else
-			 inf->cur_ptr = emit_ptr;	// case 2
-	}
-	else inf->cur_ptr = sp;				// case 1
-	inf->wrkbuf = inf->cur_ptr;		// HIHI!! I don't remember what cur_ptr is supposed to be for!??
-}
-
-
-
 // suck all the global function, struct, union, enum, and typedef prototypes out of the token stream
 // -- which means creating a new "defs" token stream, and splitting out a defs_idx from the idx_tbl
-uint32_t proto_pass(struct proto_info *inf)
+uint32_t proto_pass(struct proto_info *inf, uint8_t *new_eb)
 {
 	int32_t i;
 	uint32_t j, k, m;
 	uint8_t bol_flag, *p, *c, *sp;
 	int8_t level, def_flg;
 
-	bol_flag = def_flg = level = 0;
+	bol_flag = 1;
+	def_flg = level = 0;
 	i = k = m = 0;
 	p = sp = wrksp_top;
+	if (new_eb != NULL)
+		p = sp = new_eb;
 	while (1)
 	{
 // At top level, the only thing I should ever encounter at bol are typespecs/declspecs and typedefs?
 // HIHI!! I must also copydown the EMIT buffer! Use the c pointer for that! But there is a problem for the defs = -1 case that gets cancelled ...
 		if (level == 0 && def_flg == 0)
 		{
-			inf->idx_strt = k;		// save the current idx index
+			inf->idx_strt = k;		// save the *next* idx index
 			sp = p;					// save a ptr to the beginning of any prototype
 		}
 		switch (*p)
@@ -177,8 +186,7 @@ uint32_t proto_pass(struct proto_info *inf)
 
 		case TOK_NAME_IDX:
 			j = idx_tbl[k++];
-			// HIHI!! must look ahead one byte for the curly bracket and kill a potential struct def HERE
-			// if (def_flg == 0) idx_tbl[m++] = j;			// rebuild a compressed idx_tbl
+			if (++m != k) idx_tbl[m - 1] = j;			// rebuild a compressed idx_tbl
 			c = name_strings + j;
 //			if (level == 0 && def_flg == 0)				// HIHI debugging!
 //				bol_flag = 0;
@@ -187,7 +195,8 @@ uint32_t proto_pass(struct proto_info *inf)
 		case TOK_INT_CONST:
 		case TOK_FP_CONST:
 		case TOK_NONAME_IDX:
-			j = idx_tbl[k++];			// must keep k aligned with the token stream
+			j = idx_tbl[k++];							// must keep k aligned with the token stream
+			if (++m != k) idx_tbl[m - 1] = j;			// rebuild a compressed idx_tbl
 			break;
 
 		case TOK_TYPEDEF:
@@ -231,12 +240,12 @@ uint32_t proto_pass(struct proto_info *inf)
 		}		// end of switch on *p
 
 		++p;
-		if (def_flg > 2)
+		if (def_flg > 2)			// found a definition?
 		{
+			m -= k - inf->idx_strt;
 			j = p - sp;
-			wrkbuf_alloc(sp, inf);
-			if (inf->cur_ptr != sp) memmove (inf->cur_ptr, sp, j);
-//			if (def_flg == 32) parse_typedef(j, inf);
+			inf->wrkbuf = sp;		// HIHI getting rid of the wrkbuf ptr?
+			if (def_flg == 32) parse_typedef(j, inf);
 //			else if (def_flg == 16) parse_struct(j, inf->cur_ptr, inf->idx_strt, inf);
 	// HIHI!!! then send it into a parsing routine, to break the whole thing into pieces and store it in defs
 	// -- but I think I want separate parsing routines for typedefs, functions, and structs
@@ -244,7 +253,8 @@ uint32_t proto_pass(struct proto_info *inf)
 			def_flg = 0;
 		}
 
-		if ((uint32_t) (emit_ptr - wrksp) > wrk_rem - 30 * 1024) handle_emit_overflow();
+//		if ((uint32_t) (emit_ptr - wrksp) > wrk_rem - 30 * 1024) handle_emit_overflow();
+		// HIHI!! do the dealie that guarantees 16K or whatever in the buffer -- at least *nxt_pass_info amount
 
 	}		// infinite loop
 }
@@ -254,62 +264,83 @@ void post_proto()
 {
 	int32_t i;
 	i = 0;
-	// is there any post processing needed on defs?
-	// copydown idx_tbl and the emitted stream
+	// is there any post processing needed on defs? To turn them into something *useful* instead of just token streams?
+
+	// copydown idx_tbl -- emit buffer should stay where it is
 	// copyup defs, defs_idx
-	// then idx_tbl, and the emitted stream
+	// then idx_tbl
+}
+
+
+
+// the token stream is currently in a file, and must be completely loaded into RAM
+// -- either into the current workspace, or into a malloc
+int8_t ld_tokenstream()
+{
+	int i, j;
+	uint8_t *p;
+	// open the file and read **the entire thing** in binary mode (size = num_toks)
+	wrksp_top = wrksp + wrk_rem - idxidx * 4 - num_toks;
+
+	infd = qcc_open_r("hi1", 1);
+//	inf_infd = qcc_open_r(inout_fnames[??], 1);
+// HIHI! if num_toks will not fit in the wrksp with a little left for processing, then malloc it!
+//	else
+		p = wrksp_top;
+	i = j = num_toks;		// standard read loop
+	while (i != 0)
+	{
+		i = read(infd, p, j);
+		p += i;
+		j -= i;
+	}
+	*p = TOK_ENDOFBUF;
+
+	qcc_close (infd);
+	outf_exists = 0;							// reset the flag forever (unless I need to dump line_nums??)
+	infd = outfd = -1;
+// HIHI!! if a buffer gets created -- store the pointer where? -- and return a 1
+	return 0;
 }
 
 
 // process global funct prototypes, typedefs, struct, union, and enum definitions
 void prototypes()
 {
+	int8_t xtra;
 	uint32_t j, wrk_avail;
 	struct proto_info inf;
-	// the input data is either in a file, or stored between wrksp_top and wrk_rem
-	inf.wb_flag = 0;
-	inf.infd = -1;
+
+	emit_base = wrksp_top;
+	// At this point, the logic requires somewhat more random access to the token stream,
+	// so it is *required* to fit within a malloc, now.
+	xtra = 0;					// flag that the entire emit buffer is in the workspace
 	if (outf_exists != 0)		// read in the tokenized data, if it was dumped into a file
-	{
-		// open the file and read 30K in binary mode
-		wrksp_top = wrksp + wrk_rem - idxidx * 4 - 30 * 1024 - 4;
-		inf.infd = qcc_open_r("hi1", 1);
-//		inf_infd = qcc_open_r(inout_fnames[??], 1);
-		j = qcc_read(inf.infd, (char *) wrksp_top, 30 * 1024);
-		wrksp_top[j] = TOK_ENDOFBUF;
-		// since there was enough data to overflow into a file, leave half the workspace open for it
-		wrk_avail = (wrk_rem - idxidx * 4 - 30 * 1024) / 2;
-		outf_exists = 0;							// reset the flag for this next pass
-		outfd = -1;
-	}
-	else wrk_avail = wrksp_top - wrksp;				// OK to overwrite the tokenizer output
-	emit_base = wrksp + wrk_avail;
+		xtra = ld_tokenstream();
+	wrk_avail = wrksp_top - wrksp;
 	emit_ptr = emit_base;
 
-	inf.defs_idx = line_nums + lnum_cnt;			// put the defs index table just above line_nums
-	inf.defs = wrksp + idxidx * 4;					// maximum possible size is the old idxidx size
-	j = proto_pass(&inf);
+//	if ((lnum_cnt + idxidx) * 4 + num_toks > wrk_avail && lnum_cnt > wrk_avail / 32)
+//		handle_lnums_overflow();
+// set up the base_ptrs & etc, if these tables have to be truncated to fit in mem
+	// maximum possible size of defs_idx is the old idxidx size, max possible size of defs is num_toks
+	inf.defs_idx = line_nums + lnum_cnt;				// put the defs index table just above line_nums
+	inf.defs = (uint8_t *)(inf.defs_idx + idxidx);		// and defs just above that
+	inf.curdef = inf.defs;
+	inf.cur_didx = 0;
+	j = proto_pass(&inf, NULL);
 
-	if (inf.wb_flag != 0) free (inf.wrkbuf);
 	idxidx = j;
-	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
-	{
-		handle_emit_overflow();			// dump the tail end
-		close (outfd);
-		outfd = -1;
-		outf_exists = 1;	// set a flag for the next pass, to let it know there is an input file
-// HIHI!! flip the iof_in_toggle?
-	}
-
 	post_proto();
 }
 
 
 
 // global declarations belong in .bss, .data, or .rodata -- not in the .text section
-// -- deal with them, so that everything remaining belongs in .text
 void declarations()
 {
+	// HIHI global declarations also end up as symbols -- but I need to know if they are private (static) or not
+	// should I use the underbar thing to make some of them hidden scope?
 }
 
 void syntax_check()

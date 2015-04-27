@@ -37,14 +37,6 @@ int do_bench = 0;
 // #########################
 
 
-// token_info is an array of packed token information
-// token_num_map maps a token index in the array to a unique token number -- malloced as a local variable in the tokenizing routine!
-// both arrays are sorted first on hash, and second on token length
-// contains type (2 bits), len (6 bits), and str offset (24 bits) (len is at the bottom)
-//uint32_t *token_info;
-
-//uint32_t hash_to_tokid[256], cur_tokid;
-
 uint8_t *wrksp, *wrksp_top, *name_strings, host_bigendian, *emit_base, *emit_ptr;
 uint8_t stoppers[128], prep_src[128], prep_ops[256], alnum_[256], c_ops[256], whtsp_lkup[128];
 int8_t hex_lkup[256], hexout[16];
@@ -52,7 +44,7 @@ uint32_t wrk_size, wrk_rem, namestr_len, nxt_pass_info[5], *line_nums;			// , *o
 uint16_t total_errs, total_warns, max_names_per_hash;
 
 
-int32_t da_entry_count[7], da_tot_entrylen[7], ol_cnt, num_toks, lnum_cnt;
+int32_t da_entry_count[7], da_tot_entrylen[7], num_toks, lnum_cnt;		// , ol_cnt
 uint8_t *da_buffers[7], *cur_fname;
 char *outfile;
 

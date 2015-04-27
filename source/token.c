@@ -241,7 +241,7 @@ def_term:
 		if ((uint32_t) (emit_ptr - wrksp) > wrk_rem - 30 * 1024)
 		{
 			if (def_flg != 0) nxt_pass_info[TK_CUR_DEFLEN] += emit_ptr - sp;
-			handle_emit_overflow();
+			handle_emit_overflow(NULL);
 			sp = emit_ptr;
 		}
 
@@ -256,12 +256,12 @@ void pre_tokenize()
 {
 	uint32_t i, j, k;
 	uint8_t *p, *c;
-	// the input data is either in a file, or stored between wrksp_top and wrk_rem
+	// the input data is either in a file, or stored at wrksp_top -- just below name_strings
 	infd = -1;
 	if (outf_exists != 0)
 	{
 		// open the file and read 30K in binary mode
-		wrksp_top -= 30 * 1024 - 4;
+		wrksp_top = name_strings - 30 * 1024 - 4;
 		infd = qcc_open_r("hi1", 1);
 //		infd = qcc_open_r(inout_fnames[??], 1);
 		j = qcc_read(infd, (char *) wrksp_top, 30 * 1024);
@@ -270,17 +270,15 @@ void pre_tokenize()
 		outfd = -1;
 	}
 
-	// HIHI need to do a small calculation to figure out how much spare room there is for extra line_nums
 	lnum_cnt = 0;
 	i = nxt_pass_info[PP_LINE_CNT];
 	line_nums = (uint32_t *) wrksp;
-	p = emit_base;
+	p = wrksp_top;
 	emit_base = (uint8_t *) (line_nums + i + 2048);
 	emit_ptr = emit_base;
 	// line_nums format: 24 bit offset << 8 | linecount (max 255)
 	// usually the offset is into the input bytestream (linecount newlines go *before* the specified input byte)
 	// if linecount is 0, then the offset is into name_strings (of a linecount directive)
-	// and there is sometimes a second line_nums array being constructed (olnums), with an offset into the emit buffer
 	i = 0;							// current offset in the name_strings buffer
 	while (1)
 	{
@@ -292,6 +290,7 @@ void pre_tokenize()
 			++p;
 			i = 1 + c - name_strings;		// get the index of the NEXT filename
 	// HIHI!! if lnum_cnt goes too high, I need another pair of files to dump the array to
+	// -- or I have to copy up the emit buffer?
 	// -- just have ONE filename, and a length, and modify filename[length] with the inout toggle?
 		}
 		else if (*p == '\n')
@@ -318,6 +317,7 @@ void pre_tokenize()
 				{
 					qcc_close (infd);
 					infd = -1;
+					break;
 				}
 			}
 			else break;
@@ -325,13 +325,20 @@ void pre_tokenize()
 		else
 			*(emit_ptr++) = *(p++);
 
-//		if (??) handle_emit_overflow();		HIHI!!
+		if (emit_ptr > name_strings - 31 * 1024) handle_emit_overflow(NULL);
 	}
 	*(emit_ptr++) = TOK_ENDOFBUF;
-	// data was *removed* from the emit buffer, so it should always be smaller now, and fit back in its former space
+	if (outfd > 0)
+	{
+		handle_emit_overflow(NULL);
+		close (outfd);
+		outfd = -1;
+		// HIHI deal with the toggle
+		outf_exists = 1;
+	}
 	k = emit_ptr - emit_base;
 	p = emit_base;
-	emit_base = wrksp + wrk_rem - k;
+	emit_base = name_strings - k;
 	memmove (emit_base, p, k);
 	wrksp_top = emit_base;
 }
@@ -376,7 +383,7 @@ void finalize_tok()
 	memmove (p, name_strings, j);
 	name_strings = p;
 
-	// and move down wrk_rem, to ABOVE the index table
+	// and move down wrk_rem, to ABOVE the index table -- the tables above that don't change much
 	wrk_rem -= j + i + m + x;
 }
 
@@ -389,12 +396,12 @@ void tokenize()
 	uint8_t *p;
 
 	pre_tokenize();
-	// the input data is either in a file, or stored between wrksp_top and wrk_rem
+	// the input data is either in a file, or stored below name_strings
 	infd = -1;
 	if (outf_exists != 0)
 	{
 		// open the file and read 30K in binary mode
-		wrksp_top = wrksp + wrk_rem - 30 * 1024 - 4;
+		wrksp_top = name_strings - 30 * 1024 - 4;
 		infd = qcc_open_r("hi1", 1);
 //		infd = qcc_open_r(inout_fnames[??], 1);
 		j = qcc_read(infd, (char *) wrksp_top, 30 * 1024);
@@ -408,8 +415,8 @@ void tokenize()
 	emit_base = wrksp + wrk_avail;
 	emit_ptr = emit_base;
 
-	// the tokenizing pass needs 8 temporary arrays: the line_nums array, a namehash table, strings, 64b longs,
-	// floating mantissas, floating exponents, an "output lnums array", and an "index" array to keep track of everything
+	// the tokenizing pass needs 7 temporary arrays: the line_nums array, a namehash table, strings, 64b longs,
+	// floating mantissas, floating exponents, and an "index" array to keep track of everything
 	// -- the preprocessor passed on a few numbers to estimate max allocations
 
 	// allocate space for the lnums
@@ -479,8 +486,8 @@ void tokenize()
 
 	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
 	{
-		handle_emit_overflow();			// dump the tail end
-		close (outfd);
+		handle_emit_overflow(NULL);			// dump the tail end
+		qcc_close (outfd);
 		outfd = -1;
 		outf_exists = 1;	// set a flag for the next pass, to let it know there is an input file
 // HIHI!! flip the iof_in_toggle?

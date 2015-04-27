@@ -100,7 +100,7 @@ void read_tok(uint8_t **p)
 	wrksp_top[i] = TOK_ENDOFBUF;
 	if (i == 0)
 	{
-		close (infd);
+		qcc_close (infd);
 		infd = -1;
 	}
 	*p = wrksp_top;

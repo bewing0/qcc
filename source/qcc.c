@@ -56,7 +56,7 @@
 //- typing/lvalue problems with '? :'
 //- no long long bit fields
 //- 'aligned' attribute not supported for whole structs, only for fields
-//- obscure preprocessor bug
+
 
 #include "qcc.h"
 
@@ -952,19 +952,19 @@ int32_t calculate_expr(uint8_t *expr, uint64_t *llp, int32_t llcnt, double *ldp,
 }
 
 
-void handle_emit_overflow()		// struct pass_info *inf
+void handle_emit_overflow(uint32_t *accum)
 {
 	int i;
-	char *b = (char *) emit_base;
-	i = (char *) emit_ptr - b;
+	i = emit_ptr - emit_base;
+	if (accum != NULL) *accum += i;
 	if (outfd < 0)
 	{
 		outfd = qcc_create("hi1");
 //		outfd = qcc_create(inout_fnames[iof_in_toggle ^ 1]);		// HIHI need to init inout_fnames, still
 // HIHI and what happens if the open fails? show_error? fatal error and die?
 	}
-	write (outfd, b, i);			// dump out the entire emit buffer
-	emit_ptr = (uint8_t *) b;		// and reset the emit ptr back to base
+	write (outfd, (char *) emit_base, i);	// dump out the entire emit buffer
+	emit_ptr = emit_base;					// and reset the emit ptr
 }
 
 
@@ -1007,10 +1007,15 @@ int do_c_compile(uint8_t *fname)
 // but the C99 spec requires (??) functions to be able to return complete structs, long doubles, 64bit values, etc.
 // so this frontend conversion cannot be to pure tcg, I don't think -- unless there is a clever workaround for the return value thing.
 
-	emit_to_target();	// convert to binary
-	
-	// XXX: -- then separate into text/data/rodata mem buffers?
+	// XXX: -- some function needs to build the symtable/bss/data/rodata mem buffers?
+	// emit_to_target needs to look up symbols -- what format of symbol is nicest for that?
 
+	// this next function is a generic entrypoint for the config-selected specific target CPU
+	emit_to_target();	// convert to binary -- create the .text mem buffer
+
+	// XXX: then need a function that packs these mem buffers at the upper end of the workspace and lowers wrk_rem
+	// (and stores info about where all of it is located, of course)
+	
 	return 0;
 }
 
@@ -1043,7 +1048,8 @@ int compile()
 		++i;				// next source file
 	}
 
-//	build_object();			// call the output formatter to dump the mem buffers out as ELF or whatever
+	// this next function is a generic entrypoint for the config-selected specific output file format
+	build_output_file();
 
 	free (wrksp);
 	return err_lvl;
