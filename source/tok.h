@@ -74,12 +74,12 @@
 #define TOK_TYPEDEF		62
 // additional keywords associated with varaible and function declarations
 #define TOK_CONST		63
-#define TOK_ENUM		64
-#define TOK_REGISTER	65
-#define TOK_RESTRICT	66
-#define TOK_STATIC		67
-#define TOK_STRUCT		68
-#define TOK_UNION		69
+#define TOK_REGISTER	64
+#define TOK_RESTRICT	65
+#define TOK_STATIC		66
+#define TOK_STRUCT		67			// struct, union, and enum must be sequential
+#define TOK_UNION		68
+#define TOK_ENUM		69
 #define TOK_VOID		70
 #define TOK_VOLATILE	71
 // all calling conventions must be in this group, too!
@@ -103,10 +103,18 @@
 #define TOK_SWITCH		86
 #define TOK_WHILE		87
 
+#define TOK_NOIDX_OP	89			// a token that used to point to a name, and is now a no-op
+
 // HIHI whem I'm certain that this is all of them, pack these final tokens down with the others
 // -- definitely need a few more operators though -- addressof, deref, ellipsis, others???
-#define TOK_FUNCT_PTR	119			// HIHI actually a function pointer must be a typespec -- need an extra token for the index
+#define TOK_FUNCT_PTR	112			// HIHI actually a function pointer must be a typespec -- need an extra token for the index
 // two more idx types? global variable declarations, and funct prototypes (separated from the names)?
+#define TOK_ASTRUCT_IDX	114			// anonymous struct/union/enum tokens
+#define TOK_AUNION_IDX	115
+#define TOK_AENUM_IDX	116
+#define TOK_STRUCT_IDX	117			// named struct/union/enums
+#define TOK_UNION_IDX	118
+#define TOK_ENUM_IDX	119
 #define TOK_FUNCT_IDX	120			// function name index
 #define TOK_TYPEDEF_IDX	121
 #define TOK_NONAME_IDX	122			// for structs etc., where the name is left blank
@@ -132,12 +140,12 @@ static const char *keywords [] =
 	"countof",
 	"typedef",
 	"const",
-	"enum",
 	"register",
 	"restrict",
 	"static",
 	"struct",
 	"union",
+	"enum",
 	"void",
 	"volatile",
 	"alloca",

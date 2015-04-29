@@ -56,13 +56,25 @@ int tcc_set_warning(char *warning_name, int value)
  }
 }
 
+
 // how_far indicates the amount of data to show from *r
 // 0 = show one byte, 1 = show one "word", -1 = show two "words"
 void show_error(int level, char *str1, char *r, int how_far)			// HIHI!!!! modify this to accept a line number
 {
 	char *p;
 	int len;
-// HIHI!! dump filename (cur_fname) and line number  -- if some flag is set, say "command line" (instead of fname and linnum)
+
+	if (level >= 0)			// show filename & line number
+	{
+		if (cur_fname == NULL) write (2, "command line: ", 14);
+		else
+		{
+			write (2, (char *) cur_fname, strlen((char *) cur_fname));
+			write (2, ": (", 3);
+// HIHI!! use ntc (and some scratch buffer???) to dump the line number
+			write (2, ") ", 2);
+		}
+	}
 	if (level == 0)
 	{
 		write (2, "Error: ", 7);
@@ -71,7 +83,7 @@ void show_error(int level, char *str1, char *r, int how_far)			// HIHI!!!! modif
 	else if (level > 0)
 	{
 		write (2, "Warning: ", 9);
-		if (line_nums != NULL) ++total_warns;		// HIHI this test is wrong now
+		if (cur_fname != NULL) ++total_warns;		// HIHI this test is wrong now
 	}
 // else write (??, "info: ", 6); ?? -- If I send it to a non-2 fd, I have to do it *everywhere*
 	write (2, str1, strlen(str1));

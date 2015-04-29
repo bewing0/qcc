@@ -1763,6 +1763,7 @@ int preprocess(int fd, uint8_t *fname)
 	}
 
 	// name_strings must be stored ABOVE the emit buffer -- so there may be a little mem rearranging needed
+// HIHI! I may change my mind about that again and delete this swapping code -- maybe it's better to put name strings below line_nums in token()
 	i = emit_ptr - emit_base;						// total size of preprocessor output
 	name_strings = wrksp_top - lstrs_len;
 	if (name_strings < emit_ptr)					// will name_strings already fit above emit buf?

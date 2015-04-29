@@ -97,7 +97,7 @@ void tok_pass()
 			{
 				if (def_flg == 0 && level == 0) def_flg = -1;		// look for a global "struct" definition
 				*(emit_ptr++) = *(p++);
-				// the current byte must be either the beginning of a name, or an open curly bracket?
+				// the current byte must be either the beginning of a name, or an open curly bracket
 				if (alnum_[*p] == 0)
 				{
 					*(emit_ptr++) = TOK_NONAME_IDX;
@@ -241,7 +241,7 @@ def_term:
 		if ((uint32_t) (emit_ptr - wrksp) > wrk_rem - 30 * 1024)
 		{
 			if (def_flg != 0) nxt_pass_info[TK_CUR_DEFLEN] += emit_ptr - sp;
-			handle_emit_overflow(NULL);
+			handle_emit_overflow(nxt_pass_info + TK_EMIT_OUTPUT);
 			sp = emit_ptr;
 		}
 
@@ -359,7 +359,8 @@ void finalize_tok()
 	x = (flt_cnt * 2 + 3) & ~3;		// bytes in the exponent table (rounded to 4b)
 	e = emit_ptr - emit_base;			// total size of tokenizer output remaining in memory
 	num_toks = e;
-// HIHI!! if (num_toks == 0) then get the total size of the output file that must have been written
+	// if the emit buffer got dumped to disk, recover the stored length
+	if (num_toks == 0) num_toks = nxt_pass_info[TK_EMIT_OUTPUT];
 
 	// calculate the final destination pointer for the index buffer first
 	p = wrksp + wrk_rem - (j + i + m + x + idxidx * 4);
@@ -482,11 +483,12 @@ void tokenize()
 	noname_cnt = 0;
 	int_cnt = 0;
 	flt_cnt = 0;
+	nxt_pass_info[TK_EMIT_OUTPUT] = 0;
 	tok_pass();
 
 	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it
 	{
-		handle_emit_overflow(NULL);			// dump the tail end
+		handle_emit_overflow(nxt_pass_info + TK_EMIT_OUTPUT);			// dump the tail end
 		qcc_close (outfd);
 		outfd = -1;
 		outf_exists = 1;	// set a flag for the next pass, to let it know there is an input file

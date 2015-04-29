@@ -38,7 +38,7 @@
 
 // TODOS:
 // finalize/test the major_copyup() function
-// mod show_error for filenames and line numbers from any source
+// mod show_error for line numbers
 // make the ternary test in eval_const_expr active
 // the doublesharp() function is completely stubbed
 // eval_const_expr() can be simplified with better logic
@@ -234,7 +234,7 @@ void onetime_init()
 	// init wrksp_top and wrk_rem
 	wrk_rem = wrk_size;
 	wrksp_top = wrksp + wrk_size;
-	line_nums = NULL;
+	cur_fname = NULL;
 
 	// init all the arrays associated with da_buffers -- space the pointers about equally through the workspace
 	// -- they are just about to get filled with info in parse_args()
@@ -476,15 +476,6 @@ uint8_t detect_c_keyword(uint8_t *s, uint32_t j)
 	return 0;
 }
 
-
-// once per-source-file init function for qcc
-void init_qcc_state(uint8_t *fname)
-{
-//	cur_fname = fname;
-	// besides the fact that I start out at "top level", what other state info needs setting?
-	// copy down the generic tokens to the bottom of wrksp for appending
-//	num_toks = cur_tokid = 0;
-}
 
 
 int tokenize_op(uint8_t *s, uint8_t *d, int prep_flg)
@@ -971,12 +962,8 @@ void handle_emit_overflow(uint32_t *accum)
 // compile a single C source file
 int do_c_compile(uint8_t *fname)
 {
-	int in;
-	// init the compiler state machine
-	init_qcc_state(fname);
-
 	// open the source file (as text, for reading)
-	in = qcc_open_r ((char *) fname, 0);
+	int in = qcc_open_r ((char *) fname, 0);
 	if (in < 0) return QCC_ERR_FNOTFOUND;
 
 	// get a source file version number and timestamp, to include as extra info in the object file

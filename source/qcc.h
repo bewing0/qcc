@@ -158,6 +158,7 @@ uint8_t m1cstr[4] = "-1";		// string for default defines
 // -- and in the tokenizer
 #define TK_MAX_DEFLEN		0			// longest length of typedef, struct, union, or enum seen
 #define TK_CUR_DEFLEN		1			// length of current typedef, struct, union, or enum
+#define TK_EMIT_OUTPUT		2			// accumulated size of emit buffer dumped to disk
 
 
 
