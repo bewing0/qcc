@@ -1,3 +1,9 @@
+/*  QCC - Tiny C Compiler V2
+ * 
+ *  Copyright (c) 2015 Bruce Ewing
+ *  Licensed under 2-clause BSD, see file LICENSE in this tarball
+ */
+
 // Warning: the exact order of tokens 0 to 46 is vital
 
 #define TOK_ILLEGAL		0
@@ -107,7 +113,7 @@
 
 // HIHI whem I'm certain that this is all of them, pack these final tokens down with the others
 // -- definitely need a few more operators though -- addressof, deref, ellipsis, others???
-#define TOK_FUNCT_PTR	112			// HIHI actually a function pointer must be a typespec -- need an extra token for the index
+#define TOK_FUNCT_PTR	112			// HIHI actually a function pointer must be a typespec?
 // two more idx types? global variable declarations, and funct prototypes (separated from the names)?
 #define TOK_ASTRUCT_IDX	114			// anonymous struct/union/enum tokens
 #define TOK_AUNION_IDX	115
@@ -121,7 +127,7 @@
 #define TOK_NAME_IDX	123			// for strings, types, names, etc.
 #define TOK_INT_CONST	124			// integer constant
 #define TOK_FP_CONST	125			// floating point constant
-#define FIRST_IDX_TOK	TOK_FUNCT_PTR
+#define FIRST_IDX_TOK	TOK_FUNCT_PTR + 1
 
 static const char *keywords [] =
 {

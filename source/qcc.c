@@ -966,22 +966,17 @@ int do_c_compile(uint8_t *fname)
 	int in = qcc_open_r ((char *) fname, 0);
 	if (in < 0) return QCC_ERR_FNOTFOUND;
 
-	// get a source file version number and timestamp, to include as extra info in the object file
-
-	// HIHI there is an option for "preprocess only" -- which means don't do the read compression,
-	// and don't tokenize -- so give it a different code path
-//	if (preprocess only)
-//	readfile(&in);
-//	preprocess_to_text(in);
-//	return 0;
+	// XXX: get a source file version number and timestamp, to include as extra info in the object file
 
 	preprocess (in, fname);		// preprocessing: includes, macros, #ifs, etc.
+
+//	if (tccg_output_type == TCC_OUTPUT_PREPROCESS)
+//	dump_cpp_output();
+//	return 0;
 
 	tokenize();			// take the messy output from the preprocessor and tokenize it prettily
 
 	prototypes();		// parse funct/struct/union/enum/typedef info at global scope
-
-	declarations();		// parse variables at global scope
 
 	syntax_check();		// hopefully a complete and final check on syntax, one function at a time?
 

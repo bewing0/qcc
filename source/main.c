@@ -171,7 +171,7 @@ void pack_da_bufs()
 
 
 // build a set of #define statements as text, to prepend to all source files
-void qcc_predefine_macro(char *mname, char *val)
+void qcc_predefine_macro(uint8_t *mname, uint8_t *val)
 {
 	uint8_t tmp[128], *p;
 	alt_strcpy (tmp, (uint8_t *) "#define ");
@@ -415,7 +415,7 @@ int parse_args(int argc, char **argv)
     break;
    case TCC_OPTION_o:
     multiple_files = 1;
-    outfile = r1;			// this pointer is good forever
+    outfile = (char *) r1;			// this pointer is good forever
     break;
    case TCC_OPTION_r:
     /* generate a .o merging several output files */

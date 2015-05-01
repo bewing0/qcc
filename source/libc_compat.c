@@ -1,3 +1,9 @@
+/*  QCC - Tiny C Compiler V2
+ * 
+ *  Copyright (c) 2015 Bruce Ewing
+ *  Licensed under 2-clause BSD, see file LICENSE in this tarball
+ */
+
 // this file is used to try to get a little extra compatibility across compilers and various libc implementations
 // -- it provides wrapper functions and simple builtins that hide platform ugliness from the rest of the program
 // (such as MSVC constantly trying to deprecate standard libc functions,

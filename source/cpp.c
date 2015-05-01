@@ -1,3 +1,9 @@
+/*  QCC - Tiny C Compiler V2
+ * 
+ *  Copyright (c) 2015 Bruce Ewing
+ *  Licensed under 2-clause BSD, see file LICENSE in this tarball
+ */
+
 // PASS #1 -- preprocess (with a little bit of extra functionality)
 
 struct pp_recursion_info {
@@ -394,13 +400,13 @@ read_more:
 		if (*p == 0 && inf->fd >= 0)
 		{
 			inf->state = i;
-			i = sp - emit_ptr;
-			sp = emit_ptr;
 			// is enough room left in the OUTPUT buffer to do another read?
 			if (c - cmp < MAX_STRBUF_SIZE)
 			{
+				j = sp - emit_ptr;
+				sp = emit_ptr;
 				p = c + 64;
-				while (--i >= 0) *(p++) = *(sp++);		// copy i chars from the unget buffer into p
+				while (--j >= 0) *(p++) = *(sp++);		// copy chars from the unget buffer into p
 				sp = c;
 				goto read_more;
 			}

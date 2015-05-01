@@ -1,3 +1,9 @@
+/*  QCC - Tiny C Compiler V2
+ * 
+ *  Copyright (c) 2015 Bruce Ewing
+ *  Licensed under 2-clause BSD, see file LICENSE in this tarball
+ */
+
 // PASS #2 -- tokenize
 
 // Tokenizing converts keywords, names, and operators into single bytes.
