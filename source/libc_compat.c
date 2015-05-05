@@ -145,7 +145,14 @@ int ntc(int32_t i, char *p)
 
 
 
-#ifdef WIN32
+#ifdef _WIN32
+
+int countof(FlagDef *p)			// this is supposed to be an instrinsic function, but MSVC doesn't have it
+{
+	return 4;		// in qcc, the return value should always be 4
+}
+
+
 #include <sys/timeb.h>
 
 int64_t microseconds()

@@ -122,6 +122,7 @@ void read_compressed(struct pp_recursion_info *inf, uint8_t *cpydwn, int32_t cds
 {
 	uint8_t *p, *c, *sp, *cmp;
 	int lines_processed, i, j, cdsz;
+// HIHI! cur_fname is set to the OLD filename -- pass in the new fname to handle show_error? Or change cur_fname handling?
 
 	// a little initting
 	cdsz = cdsize;
@@ -403,10 +404,11 @@ read_more:
 			// is enough room left in the OUTPUT buffer to do another read?
 			if (c - cmp < MAX_STRBUF_SIZE)
 			{
-				j = sp - emit_ptr;
+				i = sp - emit_ptr;
 				sp = emit_ptr;
 				p = c + 64;
-				while (--j >= 0) *(p++) = *(sp++);		// copy chars from the unget buffer into p
+				// note: must get i set to a non-zero value somehow, before "read_more"
+				while (--i >= 0) *(p++) = *(sp++);		// copy chars from the unget buffer into p
 				sp = c;
 				goto read_more;
 			}

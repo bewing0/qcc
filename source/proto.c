@@ -29,6 +29,13 @@ struct proto_info
 };
 
 
+// HIHI!!! make sure there is a semicolon just before EOF, once the input is tokenized
+// HIHI!! any of these synchk things need to have enough info to be able to calculate a line number!
+// -- and the input pointer I have now may not be directly into the emit buffer, either!
+// so these routines need a SECOND input pointer that IS into the emit buf? Need to subtract to get an offset, then parse line_nums.
+// -- but the point is that I only need to do that crap IF I see an error.
+
+
 // HIHI these routines move into syntax.c, of course
 int synchk_vardef(uint8_t *c, int32_t len)
 {
@@ -70,7 +77,6 @@ void set_to_noop(uint8_t *p, int32_t len)
 		else *(p++) = TOK_NO_OP;
 	}
 }
-
 
 
 // p must be pointing at an open curly token -- find the corresponding close curly token
@@ -245,11 +251,11 @@ void parse_typedef(uint8_t *def, uint32_t totlen, uint32_t idx_strt, struct prot
 	}
 	*(p++) = TOK_ILLEGAL;
 	inf->curdef = p;
-	set_to_noop(def, totlen);
+	memset (def, 1, totlen);
 }
 
 
-int32_t parse_fn(uint8_t *def, uint32_t totlen, uint32_t idx_strt, struct proto_info *inf)
+void parse_fn(uint8_t *def, uint32_t totlen, uint32_t idx_strt, struct proto_info *inf, uint32_t *m)
 {
 	uint8_t *p, *c;
 	int32_t i, nxtidx, idxval;
@@ -258,13 +264,14 @@ int32_t parse_fn(uint8_t *def, uint32_t totlen, uint32_t idx_strt, struct proto_
 	if (synchk_arglist(def, totlen) == 0)
 		show_error(0, "function definition syntax error", NULL, 1);
 	// start building a defidx entry -- it should point at the name (from idxidx)
-	idxval = idx_tbl[--nxtidx];
+	idxval = idx_tbl[--nxtidx];			// back up nxtidx unit it's the first uncompressed idx
+	--*m;								// back up *m until it's the first *compressed* idx of the definition
 	inf->defs_idx[inf->cur_didx++] = idxval;
 	// then scan backwards some more through the function declaration, to verify more syntax
 	p = def - 1;
-	while (*p != TOK_SEMIC && *p != TOK_NO_OP)
+	while (*p != TOK_SEMIC && *p != TOK_NO_OP && *p != TOK_CCURLY)
 	{
-		if (*--p >= FIRST_IDX_TOK) --nxtidx;
+		if (*--p >= FIRST_IDX_TOK) --nxtidx, --*m;
 		++totlen;
 	}
 	i = def - (++p);		// get the distance back to beginning of definition (= p)
@@ -289,12 +296,146 @@ int32_t parse_fn(uint8_t *def, uint32_t totlen, uint32_t idx_strt, struct proto_
 	inf->curdef = p;
 	if (def[totlen] == TOK_SEMIC)		 // if this is a prototype, destroy it including the semicolon
 	{
-		set_to_noop(def, totlen + 1);
-		return -1;
+		memset (def, 1, totlen + 1);
+		return;
 	}
-	set_to_noop(def, totlen);
+	memset (def, 1, totlen);
 	*def = TOK_FUNCT_IDX;
-	return idxval;
+	idx_tbl[*m] = idxval;
+	++*m;
+}
+
+
+// return both a def offset and a starting def_idx
+int32_t find_def_match(uint8_t tok_type, int32_t name_off, int32_t *defoff, struct proto_info *inf)
+{
+	uint8_t *dp;
+	int32_t def_idx;
+
+	dp = inf->defs;
+	def_idx = 0;
+	while (1)
+	{
+		if (dp >= inf->curdef)
+		{
+			show_error(0, "unknown name: ", (char *) name_strings + name_off, 1);
+			break;
+		}
+		if (*dp == tok_type)
+		{
+			if (inf->defs_idx[def_idx] == name_off)			// found the match?
+				break;
+		}
+		while (*dp != TOK_ILLEGAL)							// if no match, scan to the next def
+		{
+			if (*dp >= FIRST_IDX_TOK) ++def_idx;
+			++dp;
+		}
+		++dp;
+	}
+	*defoff = dp - inf->defs;
+	return def_idx + 1;				// return the first index *inside the DEFINITION*
+}
+
+
+#define TOT_BUF_SIZE		16
+
+int expand_typedef(int32_t name_off, uint8_t *p, uint32_t buf_off, struct proto_info *inf)
+{
+	int32_t i, j, k;
+	uint8_t *dp;
+
+	// find the match for name_off
+	i = find_def_match(TOK_TYPEDEF_IDX, name_off, &j, inf);
+	// scan to the end, get the len, copy vardef into THE END of buf doing down
+	dp = inf->defs + j;
+	k = 0;
+	while (*++dp != TOK_ILLEGAL) ++k;	// get a length, find the end
+	buf_off += k;
+	if (buf_off > TOT_BUF_SIZE)
+	{
+		show_error (0, "invalid typedef expansion", NULL, 1);
+		return 1;
+	}
+	while (--k >= 0) *--p = *--dp;		// copy the def BACK INTO THE INPUT
+
+	// then parse the new data in buf --
+	// copy all non-typedefs on the front of buf to defs (and any indexes, too)
+	// when I run into a typedef, recurse
+	while (*p != TOK_ILLEGAL)
+	{
+		if (*p == TOK_NAME_IDX)			// found a typedef -- that's the only thing it could be
+		{
+			j = inf->defs_idx[i++];
+			if (expand_typedef(j, p, buf_off, inf) == 0)
+				show_error(0, "unknown type: ", (char *) name_strings + j, 1);
+		}
+		else if (*p >= FIRST_IDX_TOK)
+		{
+			j = inf->defs_idx[i++];
+			inf->defs_idx[inf->cur_didx++] = j;
+			*(inf->curdef++)= *p;
+		}
+		else
+		{
+			if (*p == TOK_STRUCT || *p == TOK_UNION || *p == TOK_ENUM)		// many SUE tokens have not been replaced with IDX tokens yet
+			{
+				if (p[1] != TOK_NAME_IDX)
+					show_error(0, "illegal type definition: ", (char *) name_strings + j, 1);
+				*(inf->curdef++)= *p + (TOK_STRUCT_IDX - TOK_STRUCT);		// replace 
+				j = inf->defs_idx[i++];
+				inf->defs_idx[inf->cur_didx++] = j;
+				++p;
+			}
+			else *(inf->curdef++)= *p;
+		}
+		++p;
+	}
+	return 1;
+}
+
+
+void parse_gbl_vardefs(uint8_t *def, uint32_t totlen, uint32_t idx_strt, struct proto_info *inf)
+{
+	uint8_t buf[TOT_BUF_SIZE], *p, *sp;
+	int32_t i, j;
+	buf[15] = TOK_ILLEGAL;
+	i = idx_strt;
+	p = def;
+	sp = inf->curdef;		// save the starting ptr of the vardef
+	// loop forward through the tokens, until there is one with a comma, open square, equal, or semicolon after it
+	// -- "recursively" parse all typedefs found, then verify syntax of this variable definition string
+	while (p[1] != TOK_COMMA && p[1] != TOK_SEMIC && p[1] != TOK_ASSIGN && p[1] != TOK_OSQUARE)
+	{
+		if (*p == TOK_NAME_IDX)			// found a typedef -- that's the only thing it could be
+		{
+			j = idx_tbl[i++];
+			if (expand_typedef(j, buf + 15, 1, inf) == 0)
+				show_error(0, "unknown type: ", (char *) name_strings + j, 1);
+		}
+		else if (*p >= FIRST_IDX_TOK)	// found a struct/union/enum/funct ptr
+		{
+			j = idx_tbl[i++];
+			inf->defs_idx[inf->cur_didx++] = j;
+			*(inf->curdef++)= *p;
+		}
+		else *(inf->curdef++)= *p;				// found an intrinsic typespec
+		++p;
+	}
+
+	synchk_vardef(sp, inf->curdef - sp);		// do a syntax check on the full typespec
+	// then finish copying the declared variable names all the way out to the semicolon
+	while (*p != TOK_SEMIC)
+	{
+		if (*p >= FIRST_IDX_TOK)
+		{
+			j = idx_tbl[i++];
+			inf->defs_idx[inf->cur_didx++] = j;
+		}
+		*(inf->curdef++)= *(p++);
+	 }
+	*(inf->curdef++) = TOK_ILLEGAL;
+	memset (def, TOK_NO_OP, totlen + 1);		// stomp on the processed declaration in the emit buffer
 }
 
 
@@ -303,6 +444,7 @@ int32_t parse_fn(uint8_t *def, uint32_t totlen, uint32_t idx_strt, struct proto_
 #define DEF_SAWSUE		2
 #define DEF_SAWTDEF		4
 #define DEF_SAWFN		8
+#define MIN_TRIG		16
 #define DEF_SUETRIG		16
 #define DEF_TDEFTRIG	32
 #define DEF_FNTRIG		64
@@ -313,13 +455,15 @@ int32_t parse_fn(uint8_t *def, uint32_t totlen, uint32_t idx_strt, struct proto_
 uint32_t proto_pass(struct proto_info *inf)
 {
 	uint32_t j, k, m, idx_strt;
-	uint8_t bol_flag, *p, *sp, level, def_flg;
+	uint8_t bol_flag, *p, *sp, def_flg;
+	int16_t level;
 
 	bol_flag = 1;
-	def_flg = level = 0;
+	def_flg = 0;
+	level = 0;
 	k = m = 0;
 	p = sp = wrksp_top;
-	p[-1] = TOK_NO_OP;				// HIHI!!!! I need to make sure this mem location is valid!! malloc 1 extra byte!
+	p[-1] = TOK_NO_OP;				// HIHI!!!! I need to make sure this mem location is valid!! malloc 8 extra bytes!
 	if (inf->emitbuf != NULL)
 		p = sp = inf->emitbuf;
 	while (1)
@@ -343,6 +487,7 @@ uint32_t proto_pass(struct proto_info *inf)
 			break;
 
 		case TOK_NAME_IDX:
+		case TOK_NONAME_IDX:
 			if (level == 0)
 			{
 				def_flg ^= DEF_SAWNAME;
@@ -352,7 +497,6 @@ uint32_t proto_pass(struct proto_info *inf)
 
 		case TOK_INT_CONST:
 		case TOK_FP_CONST:
-		case TOK_NONAME_IDX:
 			j = idx_tbl[k++];							// must keep k aligned with the token stream
 			if (++m != k) idx_tbl[m - 1] = j;			// rebuild a compressed idx_tbl
 			if (level == 0) bol_flag = 0;
@@ -371,19 +515,26 @@ uint32_t proto_pass(struct proto_info *inf)
 		case TOK_SEMIC:
 			if (level == 0)
 			{
-				if ((def_flg & DEF_SAWTDEF) != 0) def_flg = DEF_TDEFTRIG;		// completed typedef
+				if (p[-1] == TOK_C_PAREN && (def_flg & DEF_SAWFN) != 0)
+					def_flg = DEF_FNTRIG;											// completed proto fn arglist
+				else if ((def_flg & DEF_SAWTDEF) != 0) def_flg = DEF_TDEFTRIG;		// completed typedef
 				bol_flag = 1;
 			}
 			break;
 
 		case TOK_OCURLY:
+			if (level == 0 && p[-1] == TOK_C_PAREN && (def_flg & DEF_SAWFN) != 0)
+				def_flg = DEF_FNTRIG;												// completed function arglist
+
 			++level;
 			break;
 
 		case TOK_CCURLY:
-			if (--level == 0)
+			--level;
+			if (level < 0) show_error(0, "too many '}' chars detected", NULL, 1);
+			else if (level == 0)
 			{
-				// completed struct/union/enum definition?
+				// test for completed struct/union/enum definition
 				if (def_flg == (DEF_SAWSUE|DEF_SAWNAME)) def_flg = DEF_SUETRIG;
 				bol_flag = 0;
 			}
@@ -391,9 +542,6 @@ uint32_t proto_pass(struct proto_info *inf)
 
 		case TOK_ENDOFBUF:
 			return m;
-
-		case TOK_C_PAREN:
-			if ((def_flg & DEF_SAWFN) != 0) def_flg = DEF_FNTRIG;			// completed function arglist
 
 		case TOK_O_PAREN:								// detect the beginning of a function arglist (open paren preceded by a name)
 			if (level == 0 && def_flg <= 1 && p[-1] == TOK_NAME_IDX) def_flg = DEF_SAWFN;
@@ -410,18 +558,13 @@ uint32_t proto_pass(struct proto_info *inf)
 		}		// end of switch on *p
 
 		++p;
-		if (def_flg >= DEF_SUETRIG)			// found a definition?
+		if (def_flg >= MIN_TRIG)			// found a definition?
 		{
 			m -= k - idx_strt;
 			j = p - sp;
 			if (def_flg == DEF_SUETRIG) parse_sue(sp, j, idx_strt, inf);
 			else if (def_flg == DEF_TDEFTRIG) parse_typedef(sp, j, idx_strt, inf);
-			else
-			{
-// HIHI!! I may have to return a value like this from parse_sue, too! For struct definitions that include allocations.
-				j = parse_fn(sp, j, idx_strt, inf);
-				if ((int32_t) j > 0) idx_tbl[m++] = j;
-			}
+			else parse_fn(sp, j - 1, idx_strt, inf, &m);		// had to parse 1 too far to verify detection
 			def_flg = 0;
 		}
 	}		// infinite loop
@@ -435,10 +578,10 @@ uint32_t declarations(struct proto_info *inf)
 	// HIHI global declarations also end up as symbols -- but I need to know if they are private (static) or not
 	// should I use the underbar thing to make some of them hidden scope?
 	// -- but that means I need to sort each defined global variable by destination -- is it finally time that I need the Sym array?
-	uint32_t j, k, m;		// , idx_strt;
-//	uint8_t bol_flag, *p, *sp, level, def_flg;
-	uint8_t *p, level;
+	uint32_t j, k, m;
+	uint8_t *p, *sp, level, *decl_strt;
 
+	decl_strt = inf->curdef;
 	k = m = 0;
 	level = 0;
 	p = wrksp_top;
@@ -447,26 +590,42 @@ uint32_t declarations(struct proto_info *inf)
 	while (*p != TOK_ENDOFBUF)
 	{
 		while (*p == TOK_NO_OP || *p == TOK_NOIDX_OP) ++p;
-		// at top level, the only things that remain are variable defs, and functions
+		// at top level, the only things that remain are variable defs, variable initializations, and functions
 		if (level == 0)
 		{
-			// the function definitions should all begin with a TOK_FUNCT_IDX
+			// the function definitions should all begin with a TOK_FUNCT_IDX -- skip over them
 			if (*p == TOK_FUNCT_IDX)
 			{
 				j = idx_tbl[k++];							// must keep k aligned with the token stream
 				if (++m != k) idx_tbl[m - 1] = j;			// rebuild a compressed idx_tbl
+				sp = name_strings + j;			// HIHI!!! debugging!
+				sp += level;
 			}
 			else if (*p == TOK_OCURLY) ++level;
-			else
+			else if (*p != TOK_ENDOFBUF)
 			{
-				// this is the beginning of a variable definition -- collect all the terms up to the first varname
-				// -- there may still be unknown names that are typedefs (and should be looked up and resolved)
-				j = 0;
+				// anything else is the beginning of a variable definition
+				sp = p;
+				j = k;
+				// advance the k value, before the underlying data gets erased
+				while (*p != TOK_SEMIC)
+				{
+					if (*(p++) >= FIRST_IDX_TOK) ++k;
+				}
+				parse_gbl_vardefs(sp, p - sp, j, inf);
 			}
 		}
+		else if (*p == TOK_OCURLY) ++level;
 		else if (*p == TOK_CCURLY) --level;
+		else if (*p >= FIRST_IDX_TOK)					// copy/skip function definitions (not at level 0)
+		{
+			j = idx_tbl[k++];							// must keep k aligned with the token stream
+			if (++m != k) idx_tbl[m - 1] = j;			// rebuild a compressed idx_tbl
+		}
 		++p;
 	}
+	*(inf->curdef) = TOK_ILLEGAL;
+	inf->curdef = decl_strt;
 	return m;
 }
 

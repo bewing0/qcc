@@ -91,7 +91,7 @@ void tok_pass()
 		switch (*p)
 		{
 		case ESCCHAR_TOK:
-			++p;				// don't need ESCCHARs anymore
+			++p;
 			if (def_flg == 0)
 			{
 				sp = emit_ptr;										// save a ptr to starts of defs
@@ -114,7 +114,7 @@ void tok_pass()
 			break;
 
 		case ' ':
-			++p;		// the input only contains whitespace to guarantee separation between names
+			++p;		// the input only contained whitespace to guarantee separation between names
 			break;		// -- but that is no longer needed, so discard it
 
 		case ESCCHAR_LE7F:

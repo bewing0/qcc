@@ -11,13 +11,6 @@
 
 
 
-
-int countof(FlagDef *p)			// HIHI!! faking this for now! It's an *INTRINSIC* function, like offsetof()!!!
-{
-	return 4;		// in qcc, the return value should always be 4
-}
-
-
 static int set_flag(FlagDef *flags, int nb_flags, char *flg_name, int value)
 {
  int i;
