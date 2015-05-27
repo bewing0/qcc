@@ -113,8 +113,9 @@
 
 // HIHI whem I'm certain that this is all of them, pack these final tokens down with the others
 // -- definitely need a few more operators though -- addressof, deref, ellipsis, others???
-#define TOK_FUNCT_PTR	112			// HIHI actually a function pointer must be a typespec?
-// two more idx types? global variable declarations, and funct prototypes (separated from the names)?
+#define TOK_FUNCT_PTR	111			// HIHI actually a function pointer must be a typespec?
+// one more idx type? global variable declarations?
+#define TOK_FN_PROT_IDX	113
 #define TOK_ASTRUCT_IDX	114			// anonymous struct/union/enum tokens
 #define TOK_AUNION_IDX	115
 #define TOK_AENUM_IDX	116

@@ -11,6 +11,9 @@ struct pp_recursion_info {
 	int depth;					// recursion depth for nested included files
 	int state;					// state machine info used only in read_compressed
 	uint32_t line_num;			// current line number in file fname
+	int32_t enum_val;			// current automatic numbering of enums
+	int16_t level;				// depth of curly brackets so far
+	int16_t enum_flg;			// enum definitions work best with special handling
 	uint8_t *buf_top;			// a pointer to the terminating NUL + 1 in the input buffer
 	uint8_t *u;					// storage for "ungetted" bytes in read_compressed
 };
@@ -452,7 +455,7 @@ uint32_t unescaped_EOL(uint8_t **s, uint8_t *dest, int do_copy, struct pp_recurs
 	len = 1;			// include the terminating NUL
 	p = *s;
 	// scan the defined string to an unescaped EOL as a "constant or macro expression" and store it
-	while (*p != '\n' && *p != 0x1d && *p != 0)		// note: 0x1d is an unescapable pseudo-newline
+	while (*p != '\n' && *p != PSEUDO_NL && *p != 0)
 	{
 		if (*p == ESCNL_TOK)
 		{
@@ -911,7 +914,7 @@ void pp_build_name(uint8_t *mname, uint8_t *p, uint8_t hash, int32_t len, struct
 			*--p = '-';
 		}
 		i = 0;
-		while (*p != 0 && *p != '\n') *(c++) = *(p++), ++i;
+		while (*p != 0 && *p != '\n' && *p != PSEUDO_NL) *(c++) = *(p++), ++i;
 		*c = 0;
 		namestr_len += len + 2 + i;
 	}
@@ -1037,6 +1040,11 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 						else if ((*s | 0x20) == 'b') *(d++) = *(s++);
 					}
 					while (hex_lkup[*s] >= 0 || *s == '.' || (*s | 0x20) == 'p' || *s == '+' || *s == '-') *(d++) = *(s++);
+					if ((*s | 0x20) == 'u') ++s;			// discard any ULL postfix
+					if ((*s | 0x20) == 'l')
+					{
+						if ((*++s | 0x20) == 'l') ++s;
+					}
 				}
 				else
 				{
@@ -1135,7 +1143,14 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 		{
 			h = num_parse(s, &s, &llp[i - NUM_PP_TOKENS - 1], &ldp[j - NUM_PP_TOKENS - 1], NULL, NULL);
 			if (h == 0)
+			{
 				*(d++) = (uint8_t) i++;
+				if ((*s | 0x20) == 'u') ++s;			// discard any ULL postfix -- *everything* is ULL
+				if ((*s | 0x20) == 'l')
+				{
+					if ((*++s | 0x20) == 'l') ++s;
+				}
+			}
 			else
 				*(d++) = (uint8_t) j--;
 		}
@@ -1174,6 +1189,85 @@ int32_t eval_const_expr(uint8_t **p, struct pp_recursion_info *inf)
 }
 
 
+// skip whitespace AND newlines
+uint8_t *pp_skipwhite(uint8_t *p, struct pp_recursion_info *inf)
+{
+	while (*p == '\n' || *p == ' ' || *p == ESCNL_TOK)
+	{
+		while (*p == ' ') ++p;
+		if (*p == '\n' || *p == ESCNL_TOK)
+		{
+			++p;
+			++inf->line_num;
+			*(emit_ptr++) = '\n';
+		}
+	}
+	return p;
+}
+
+
+uint8_t *parse_global_enum(uint8_t *p, struct pp_recursion_info *inf)
+{
+	uint8_t *c, *sp, hsh_val;
+	int32_t i;
+	uint32_t j;
+
+	// at this point, p should be pointing at a "name/dblquotestring = number," string
+	if (*p != '"' && alnum_[*p] == 0)
+		show_error(0, "global enum contents syntax error", NULL, 1);
+	c = sp = p;
+	if (*p == '"')
+	{
+		// string must be shorter than 256 bytes -- and set the flag that strings were used in enums
+		j = 2;
+		++p;			// note: read_compressed guarantees there are no newlines to deal with
+		while (*p != '"' && *p != 0) ++p, ++j;
+		if (j > 255) show_error (0, "enum definition string too long (>253 chars inside the quotes)", NULL, 1);
+	}
+	else
+	{
+		j = 0;
+		while (alnum_[*p] != 0) ++p, ++j;
+	}
+	hsh_val = hash(c, j);
+	i = get_name_idx(hsh_val, &c, j, 1, (uint32_t *) wrksp);
+	if (i < 0)							// is it a known macro?
+		show_error (0, "enum definition value is already defined: ", (char *) sp, 1);
+	else
+	{
+		p = pp_skipwhite(p, inf);
+// HIHI!!! should check for a # char right here -- if it's there, set "current state" to "before equals" and return
+// -- need a label here so I can jump back on reentry
+		// now get the definition value -- if this is the very first def in the enum, check for an equal sign
+		if (inf->enum_val < 0 && *p == '=')			// does this enum have user-defined values?
+		{
+			inf->enum_val = -2;
+			p = pp_skipwhite(++p, inf);
+// HIHI!!! should check for a # char right here -- if it's there, set "current state" to "after equals" and return
+// -- need a label here so I can jump back on reentry
+			c = p;
+			if (*p == '0')				// scan an integer value -- HIHI!!! verify that at least 1 digit gets scanned?
+			{
+				++p;
+				if ((*p | 0x20) == 'b' || (*p | 0x20) == 'x') ++p;
+			}
+			while (hex_lkup[*p] >= 0) ++p;
+			i = *p;				// must temporarily stomp on the terminating char for the number
+			*p = '\n';
+			pp_build_name(sp, c, hsh_val, j, inf);
+			*p = (uint8_t) i;		// recover the saved value
+		}
+		else
+		{
+			if (++inf->enum_val < 0) show_error (0, "either all or no enum values can be user defined, they cannot be mixed", NULL, 1);
+			ntc (inf->enum_val, (char *) emit_ptr);
+			pp_build_name(sp, emit_ptr, hsh_val, j, inf);
+		}
+	}
+	return p;
+}
+
+
 int32_t name_lookup(uint8_t *p, struct pp_recursion_info *inf)
 {
 	uint8_t *c;
@@ -1205,13 +1299,12 @@ void cpp_parse(struct pp_recursion_info *pinfo, uint8_t *lfile_strs, uint32_t *l
 	}
 	// init one item in the ninfo struct from the parent -- ninfo is used when including nested files
 	ninfo.depth = pinfo->depth + 1;
-	p = wrksp_top;
 
 	// loop over the source file until it is fully processed
+	p = pp_skipwhite(wrksp_top, pinfo);
 	while (1)
 	{
 		bypass_flg = 0;
-		while (*p == ' ') ++p;
 
 		switch (*p)
 		{
@@ -1303,12 +1396,17 @@ bypass_done:
 					ninfo.buf_top = wrksp_top;
 					ninfo.state = 0;
 					ninfo.line_num = 1;
+					// enums can span entire included files -- so the enum state must be passed both ways
+					ninfo.enum_flg = pinfo->enum_flg;
+					ninfo.level = pinfo->level;
 
 					read_compressed (&ninfo, NULL, 0);
 					cpp_parse(&ninfo, lfile_strs, lstrs_len, sp);				// recurse
 					// note: the final NUL byte of the recursed file was written on top of p
 					++p;
 
+					pinfo->enum_flg = ninfo.enum_flg;
+					pinfo->level = ninfo.level;
 					// output a "line directive" pointing back to the parent file
 					c = lfile_strs + *lstrs_len;
 					i = 8;
@@ -1465,18 +1563,53 @@ discard:
 			// note: literal bytes are guaranteed to have values less than 256, so they are never counted in nxt_pass_info[PP_BIG_NUMS]
 			++nxt_pass_info[PP_NUM_CNT];			// but are always counted as numeric values
 			*(emit_ptr++) = *(p++);
-			// cheat and fall through to copy the second byte
+			if (emit_ptr[-1] == '\n' || emit_ptr[-2] == '\n')
+				++nxt_pass_info[PP_LINE_CNT];			// try to estimate the number of compressed lines
+			*(emit_ptr++) = *(p++);
+			pinfo->enum_flg = 0;
+			break;
+
+		case '}':
+		case '{':
+			if (*p == '}')			// global enums require some special handling
+			{
+				if (pinfo->enum_flg == 0) --pinfo->level;
+				else
+				{
+					pinfo->enum_flg = 0;
+					++p;
+					break;
+				}
+			}
+			else
+			{
+				if (pinfo->level == 0 && pinfo->enum_flg != 0)
+				{
+					pinfo->enum_flg = 2;		// once a global enum definition is detected, absorb it as a series of #definitions
+					pinfo->enum_val = -1;
+					++p;
+					break;
+				}
+				++pinfo->level;
+			}
+
+		case ',':			// if parsing a global enum, don't emit commas
+			if (pinfo->enum_flg == 2)			// HIHI change these values to 0, -1, +1??
+			{
+				++p;
+				break;
+			}
 
 		case '(':	case ')':	case '=':	case '<':
 		case '>':	case '&':	case '|':	case '!':
 		case '+':	case '-':	case '*':	case '/':
 		case '%':	case '^':	case '~':	case '?':
-		case '[':	case ']':	case ';':
-		case '{':	case '}':	case ':':
-		case ',':	case '.':
+		case '[':	case ']':	case ';':	case ':':
+		case '.':
 			if (emit_ptr[-1] == '\n' || emit_ptr[-2] == '\n')
 				++nxt_pass_info[PP_LINE_CNT];			// try to estimate the number of compressed lines
 			*(emit_ptr++) = *(p++);
+			pinfo->enum_flg = 0;
 			break;
 
 		case '"':						// all escaped newlines have already been removed from inside string constants
@@ -1487,7 +1620,10 @@ discard:
 			if (*p == '\n') show_error(0,"newline in string constant", NULL, 1);
 			else if (*p == 0) show_error(0,"unmatched doublequotes at EOF", NULL, 1);
 			else *(emit_ptr++) = *(p++);
+// if (pinfo->enums_used_strings != 0 && p - sp < 256) hsh_val = hash (sp, p - sp); i = get_name_idx();
+// if (i < 0) copy in the definition; emit_ptr -= p - sp; HIHI!!
 			nxt_pass_info[PP_ALNUM_SIZE] += p - sp;
+			pinfo->enum_flg = 0;
 			break;
 
 		case '0':	case '1':			// emit pure numbers raw
@@ -1497,14 +1633,14 @@ discard:
 		case '8':	case '9':
 			if (emit_ptr[-1] == '\n') ++nxt_pass_info[PP_LINE_CNT];			// try to count the number of compressed lines
 			++nxt_pass_info[PP_NUM_CNT];			// total count of all numeric values
-			// overestimate a total count of numeric constants with values bigger than 255 (just do a quickie test)
-			// -- if there are more than 2 digits in the number or it's a float, then "it's bigger than 255"
+			// also do a very simple check to overestimate a total count of "big" numeric constants
 			c = p + 1;
 			if (*p == '0' && (p[1] | 0x20) == 'x') c += 2;			// HIHI!!!!! add in 0b!
 			if ((hex_lkup[*c] >= 0 || *c == '.') && (hex_lkup[c[1]] >= 0 || c[1] == '.'))
 				++nxt_pass_info[PP_BIG_NUMS];
 			while (alnum_[*p] != 0) *(emit_ptr++) = *(p++);			// emit the raw text into the output buffer
 			// note: if there is alpha crud on the end of the number, it will give a syntax error later
+			pinfo->enum_flg = 0;
 			break;
 
 		case '_':		// parse occurrences of ___LINE__, ___FILE__, ___DATE__, ___TIME__, ___FUNCTION__, ___VA_ARGS__
@@ -1566,7 +1702,7 @@ discard:
 				}
 				else
 				{
-bad_3_:
+bad_3_:		// HIHI!!!! I don't think I want to do this.  I'm sure that programmers name functions with double and triple underbars ....
 					show_error(0, "unknown preprocessor macro: ", (char *) sp, 1);
 					// HIHI -- should there be some sort of discarding here? To *where*??
 					break;
@@ -1634,19 +1770,12 @@ bad_3_:
 			}
 			else		// tokenize all recognized keywords
 			{
+				pinfo->enum_flg = 0;
+				if (i == TOK_ENUM)
+					pinfo->enum_flg = 1;
 				emit_ptr = sp;					// remove the raw text from the output buffer
 				*(emit_ptr++) = ESCCHAR_TOK;
 				*(emit_ptr++) = (uint8_t) i;
-			}
-			break;
-
-		case '\n':
-		case ESCNL_TOK:
-			while (*p == '\n' || *p == ESCNL_TOK)
-			{
-				*(emit_ptr++) = '\n';
-				++pinfo->line_num;
-				++p;
 			}
 			break;
 
@@ -1659,6 +1788,7 @@ bad_3_:
 
 		}		// end of switch on *p
 
+		p = pp_skipwhite(p, pinfo);
 		// verify that emit_ptr isn't close to overflowing (soft 64k limit)
 		if (p - emit_ptr < 0x10000) handle_emit_overflow(NULL);
 
@@ -1674,6 +1804,13 @@ bad_3_:
 		c = p;
 		while (*c != '\n' && *c != PSEUDO_NL && *c != 0) ++c;
 		if (*c == 0 && *p != 0) show_error(0, "line is too long to process", NULL, 1);
+
+		// parse any lines from a global enum definition -- while still allowing preprocessor directives to run
+		if (pinfo->enum_flg > 1 && *p != '}' && *p != ',')
+		{
+			if (*p == '#') continue;			// handle a preprocessor directive inside the enum
+			p = parse_global_enum(p, pinfo);
+		}
 	}
 }
 
@@ -1689,8 +1826,10 @@ int preprocess(int fd, uint8_t *fname)
 	// prepare to read the first 30K gulp of the main source file
 	inf.depth = 0;
 	inf.state = 0;
+	inf.enum_flg = 0;
+	inf.level = 0;
 	inf.fd = fd;
-	inf.buf_top = wrksp_top;
+	inf.buf_top = wrksp + wrk_rem;
 	inf.line_num = 1;
 
 	// In the preprocessor, "names" consist of #defined macros.
@@ -1748,6 +1887,7 @@ int preprocess(int fd, uint8_t *fname)
 	// copy in the global predefines now, for processing -- as text, prepended to the source file
 	i = da_tot_entrylen[PREDEFINES];
 	memmove (wrksp_top - i, da_buffers[PREDEFINES], i);
+	wrksp_top -= i;
 	memset (nxt_pass_info, 0, 20);
 	outfd = -1;
 

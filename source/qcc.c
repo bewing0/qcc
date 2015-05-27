@@ -44,8 +44,8 @@
 // eval_const_expr() can be simplified with better logic
 // handle floating point math in preprocessor constant expressions
 // is the handling of escaped newlines legal for numbers and names?
-// Isn't there some deal about putting names inside parens to prevent macro substitutions??
-// should recursive macro definitions be prevented or limited somehow?
+// putting names inside parens to prevent macro substitutions
+// self-recursive macro definitions should be prevented or limited somehow?
 
 // later:
 // sizeof() needs to be able to recognize a function pointer
@@ -977,8 +977,6 @@ int do_c_compile(uint8_t *fname)
 	tokenize();			// take the messy output from the preprocessor and tokenize it prettily
 
 	prototypes();		// parse funct/struct/union/enum/typedef info at global scope
-
-	syntax_check();		// hopefully a complete and final check on syntax, one function at a time?
 
 	if (total_errs != 0) return 1;
 

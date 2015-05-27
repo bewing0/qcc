@@ -163,6 +163,7 @@ int64_t microseconds()
 }
 
 #else
+
 int64_t microseconds()
 {
 	struct timeval tv;

@@ -65,25 +65,23 @@ int32_t tok_build_name(uint8_t *name, uint8_t hash, uint32_t len)
 
 void tok_pass()
 {
-	uint8_t *p, *c, *sp;
-	int8_t level, def_flg;
+	uint8_t *p, *c;
+	int8_t level;
 	int32_t i;
-	uint32_t j, wb_offset, ln_idx;
+	uint32_t j, ln_idx;
 	uint64_t ll;
 	double d;		// HIHI!! removing this later
 
-	nxt_pass_info[TK_MAX_DEFLEN] = 0;
-	level = def_flg = 0;		// "currently defining a structure" flag
-	wb_offset = ln_idx = 0;
+	level = 0;
+	ln_idx = 0;
 	p = wrksp_top;
-	sp = p;						// eliminate a compiler warning
 	while (1)
 	{
 		// update the entries in the line_nums buffer to point to the emit buffer instead of the input
 		while (1)
 		{
 			if ((line_nums[ln_idx] & 0xff) == 0) ;
-			else if ((line_nums[ln_idx] >> 8) <= p - wrksp_top + wb_offset)
+			else if ((int)(line_nums[ln_idx] >> 8) <= p - wrksp_top)
 				line_nums[ln_idx] = (line_nums[ln_idx] & 0xff) | ((emit_ptr - emit_base) << 8);
 			else break;
 			++ln_idx;
@@ -92,16 +90,10 @@ void tok_pass()
 		{
 		case ESCCHAR_TOK:
 			++p;
-			if (def_flg == 0)
-			{
-				sp = emit_ptr;										// save a ptr to starts of defs
-				nxt_pass_info[TK_CUR_DEFLEN] = 0;
-			}
-			if (*p == TOK_TYPEDEF && level == 0) def_flg = 2;		// look for a global typedef
-			// parse for anonymous struct, union, and enum tokens
+			// parse for anonymous struct, union, and enum tokens (at global AND local level)
+			// begin the process of converting them to either "anonymous" or "named" types
 			if (*p == TOK_STRUCT || *p == TOK_UNION || *p == TOK_ENUM)
 			{
-				if (def_flg == 0 && level == 0) def_flg = -1;		// look for a global "struct" definition
 				*(emit_ptr++) = *(p++);
 				// the current byte must be either the beginning of a name, or an open curly bracket
 				if (alnum_[*p] == 0)
@@ -194,65 +186,41 @@ void tok_pass()
 			while (alnum_[*++p] != 0) ++j;
 			i = hash(c, (int) j);
 			idx_tbl[idxidx++] = tok_build_name(c, (uint8_t) i, j);		// the index array stores the string offset
-			*(emit_ptr++) = TOK_NAME_IDX;							// emit a "name token"
+			*(emit_ptr++) = TOK_NAME_IDX;								// emit a "name token"
 			break;
 
 		case '{':
-			++level;
-			if (def_flg < 0) def_flg = 1;		// parse a struct/union/enum def between curly brackets
-			*(emit_ptr++) = TOK_OCURLY;
-			++p;
-			break;
-
 		case '}':
-			if (--level == 0 && def_flg != 0)
-			{
-				if (--def_flg == 0) goto def_term;
-			}
-			*(emit_ptr++) = TOK_CCURLY;
-			++p;
-			break;
-
-		case ',':
-		case ';':
-			if (level == 0 && def_flg > 0)		// does this terminate a definition?
-			{
-def_term:
-				// calculate the total length of this definition
-				j = nxt_pass_info[TK_CUR_DEFLEN] + (emit_ptr - sp) + 1;
-				// pass the *max* length of a defintion to the prototyping pass
-				if (j > nxt_pass_info[TK_MAX_DEFLEN]) nxt_pass_info[TK_MAX_DEFLEN] = j;
-				def_flg = 0;
-			}
+			level += '{' + 1 - (int8_t) *p;								// calculate a +1 or -1 on level
 			// fall into tokenizing the op
 		case '(':	case ')':	case '=':	case '<':
 		case '>':	case '&':	case '|':	case '!':
 		case '+':	case '-':	case '*':	case '/':
 		case '%':	case '^':	case '~':	case '?':
 		case '[':	case ']':	case ':':	case '.':
+		case ',':	case ';':
 			j = (uint32_t) tokenize_op(p, emit_ptr, 0);
 			p += j;
 			++emit_ptr;
-			// HIHI!! must copy this line of code into the doublequote section? Anywhere else?
-			if (level == 0 && def_flg < 0) def_flg = 0;		// kill a potential struct def on anything other than an OCURLY
 			break;
 
 		case TOK_ENDOFBUF:
 			// the only way to get here is to hit EOF -- so return;
+			*(emit_ptr++) = TOK_SEMIC;			// it is best for the logic to guarantee a semicolon just before EOF
 			*(emit_ptr++) = TOK_ENDOFBUF;
 			return;
 
 		}		// end of switch on *p
 
-		if ((uint32_t) (emit_ptr - wrksp) > wrk_rem - 30 * 1024)
+		// if there is an OPEN input file, then don't overwrite the read buffer
+		if (infd >= 0)
 		{
-			if (def_flg != 0) nxt_pass_info[TK_CUR_DEFLEN] += emit_ptr - sp;
-			handle_emit_overflow(nxt_pass_info + TK_EMIT_OUTPUT);
-			sp = emit_ptr;
-		}
+			if (emit_ptr > name_strings - 30 * 1024)
+				handle_emit_overflow(nxt_pass_info + TK_EMIT_OUTPUT);
 
-		// guarantee there is always 16K minimum in the input buffer at all times
-		if (infd >= 0 && (uint32_t) (p - wrksp) > wrk_rem - 16 * 1024) read_tok (&p);
+			// and guarantee there is always 16K minimum in the input buffer at all times
+			if (p > name_strings - 16 * 1024) read_tok (&p);
+		}
 	}		// infinite loop
 }
 
@@ -337,7 +305,7 @@ void pre_tokenize()
 	if (outfd > 0)
 	{
 		handle_emit_overflow(NULL);
-		close (outfd);
+		qcc_close (outfd);
 		outfd = -1;
 		// HIHI deal with the toggle
 		outf_exists = 1;
@@ -489,7 +457,6 @@ void tokenize()
 	noname_cnt = 0;
 	int_cnt = 0;
 	flt_cnt = 0;
-	nxt_pass_info[TK_EMIT_OUTPUT] = 0;
 	tok_pass();
 
 	if (outfd > 0)			// if the emit buffer overflowed into a file, finish off the file and close it

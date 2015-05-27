@@ -192,8 +192,8 @@ void qcc_preundef_symbol(uint8_t *symname)
 void do_global_defines()
 {
     /* standard defines */
-	qcc_predefine_macro("__STDC__", NULL);
-	qcc_predefine_macro("__STDC_VERSION__", "199901L");
+	qcc_predefine_macro((uint8_t *) "__STDC__", NULL);
+	qcc_predefine_macro((uint8_t *) "__STDC_VERSION__", (uint8_t *) "199901L");
 
 	target_specific_defines();
 
@@ -203,14 +203,18 @@ void do_global_defines()
     //tcc_define_symbol(s, "linux", NULL);
 #endif
     /* qcc-specific defines */
-	qcc_predefine_macro("__qcc__", NULL);
+	qcc_predefine_macro((uint8_t *) "__qcc__", NULL);
+	qcc_predefine_macro((uint8_t *) "_inline", (uint8_t *) "inline");
+	// XXX: there is at least _inline_ also -- but the ORDER of defining them is important!
+	qcc_predefine_macro((uint8_t *) "__builtin_va_list", (uint8_t *) "void *");
 
     /* qcc & gcc defines */
-	qcc_predefine_macro("__SIZE_TYPE__", "unsigned int");
-	qcc_predefine_macro("__PTRDIFF_TYPE__", "int");
+	qcc_predefine_macro((uint8_t *) "__SIZE_TYPE__", (uint8_t *) "unsigned int");
+	qcc_predefine_macro((uint8_t *) "__PTRDIFF_TYPE__", (uint8_t *) "int");
 
     /* wchar type and default library paths */
-	qcc_predefine_macro("__WCHAR_TYPE__", "int");			// XXX: obviously this is wrong on Windoze (unsigned shorts)
+// XXX: obviously this is wrong on Windoze (unsigned shorts)
+	qcc_predefine_macro((uint8_t *) "__WCHAR_TYPE__", (uint8_t *) "int");
 	// HIHI!!! is THIS the spot where you do the UNDEFINES??
 }
 
